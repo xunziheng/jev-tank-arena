@@ -1,93 +1,95 @@
-# JEV ARENA · 坦克实验场
+# Jev Tank Arena
 
-独立浏览器游戏：玩家驾驶绿色坦克；Jev 为橙色坦克选择行动，并作为独立导演决定道具投放。React + TypeScript + Canvas 2D + Vite，Node.js + Fastify 服务端。
+A browser-based tank battle where you fight an AI-controlled opponent powered by Jev.
 
-## 启动
+You control the green tank. Jev controls the orange tank and can also act as the arena director, deciding when and where weapon pickups appear. The game combines AI decisions with deterministic local physics, pathfinding, trajectory prediction, and collision detection.
+
+## Features
+
+- Fast Canvas 2D tank combat
+- Random, reachable spawn positions
+- Bouncing shells that can hit their owner
+- Machine guns, lasers, and mines
+- A* pathfinding and live trajectory prediction
+- Jev decision probabilities shown in the arena
+- Three modes for comparing AI and local control
+- Decision trace export for debugging
+
+## Game Modes
+
+- **Jev Direct** — Jev chooses complete movement, aim, and fire actions.
+- **Jev Tactical** — Jev chooses tactics while local systems handle aiming and emergency dodging.
+- **Local Practice** — Runs without an API key using rule-based behavior.
+
+Jev requests are asynchronous. Slow or failed responses never pause the game, and stale decisions are discarded.
+
+## Getting Started
+
+Requirements:
+
+- Node.js 22 or later
+- A TypeSafe API key for the Jev modes
 
 ```sh
 nvm use
 npm install
 cp .env.example .env
+```
+
+Add your API key to `.env`:
+
+```env
+TYPESAFE_API_KEY=your_api_key
+TYPESAFE_MODEL=jev-latest
+PORT=3001
+```
+
+Start the frontend and backend together:
+
+```sh
 npm run dev
 ```
 
-打开 http://127.0.0.1:5173 。本地练习不需要密钥，明确使用规则 AI 和随机道具，不调用 Jev。
+Open [http://127.0.0.1:5173](http://127.0.0.1:5173).
 
-真实模式：在项目根目录 `.env` 中填写 `TYPESAFE_API_KEY`，重启 `npm run dev`，在页面点「检查连接」后选择「Jev 实战」。页面的“已连接”只表明服务端已配置密钥；第一条成功决策才代表 API 调用成功。API Key 不进入浏览器和构建产物。可选 `TYPESAFE_MODEL` 默认 `jev-latest`。
+The API key stays on the server and is never sent to the browser. Local Practice works without a key.
 
-生产构建也可在本机预览：
+## Controls
 
-```sh
-npm run build
-npm start
-```
+| Action | Control |
+| --- | --- |
+| Move | `WASD` or arrow keys |
+| Aim | Mouse |
+| Fire | Left mouse button or `Space` |
+| Pause | `P` |
 
-打开 http://127.0.0.1:3001 。开发代理默认使用 3001 端口；如修改 PORT，请同步修改 vite.config.ts。
+Each tank has three health points. The first tank to score five points wins.
 
-## 操作与规则
+## Technology
 
-- WASD / 方向键移动，鼠标瞄准，按住左键或空格开火。地雷武器使用同一开火键部署。
-- P 暂停，按钮继续；切出窗口自动暂停。切换模式或重开会清空比赛。
-- 每辆坦克 3 点生命，先得 5 分获胜。同归于尽不计分；每回合重置武器和场景物品。
-- 普通炮弹造成 1 点伤害，最多反弹 5 次，离膛短暂豁免后可以伤到自己。
-- 机关枪 24 发，快速连射；激光炮 4 发，0.65 秒预警后造成 2 点伤害，墙会阻挡激光。
-- 地雷 3 枚，部署 1 秒后武装，25 秒过期；爆炸造成 2 点伤害，双方均可触发。
-- 导演从近似等距、安全的候选位置选择武器拾取物，最多同时存在 3 个；每 12 秒评估一次，可以选择不投放。道具 35 秒过期。
-- 桌面键鼠玩法。窄屏适配了布局，但尚未实现手机触控摇杆。
+- React and TypeScript
+- Canvas 2D
+- Vite
+- Node.js and Fastify
+- TypeSafe SDK and Jev
 
-## Jev 与引擎的边界
-
-现在采用 **Jev 战术 + 本地战斗反射**：Jev 选择追击、直射、反弹截击、侧移射击、争夺武器、撤退等完整方案；本地控制器逐帧执行并跟踪可见目标，只有方案授权后才允许射击。没有有效战术时不会自动选择攻击，但紧急避险仍然工作。
-
-- **动态请求目标间隔**：交战/危险 250ms，追击/道具目标 500ms，搜索 900ms。每角色最多一个在途请求；坦克还有 220ms 的实际时钟下限，服务端限流下限 180ms。间隔从请求开始算，慢响应期间不堆积请求。实际决策频率取决于端到端延迟，不能保证 4Hz。
-- **瞄准**：每帧从连续可见位置估计速度并计算提前量。实际开火前再验证弹道。普通炮与机关枪支持经过一次墙面反弹的射击；激光预测 0.65 秒蓄力后的目标位置。
-- **闪避**：约每 50ms 预演未来 0.9 秒的炮弹（含反弹）、激光和地雷；在伤害迫近时比较原动作、停止和八方向移动，只有风险降低才短暂覆盖 Jev 路线。反射介入明确标为 `LOCAL REFLEX`。
-- **共享物理**：真实炮弹与预测使用同一个积分函数，射击候选检查自伤。布雷需要一条在武装前足以离开爆炸范围的撤离路线。
-- **公平视野**：不读取玩家输入或隐藏移动。失去视野后不再更新速度。最近 0.75 秒的冻结位置可作为显式不确定的反弹射击候选；超过窗口禁止记忆射击。寻路最多保留 5 秒的最后位置。导演仍然独立并保持双方近似等距投放。
-- **过期保护**：坦克响应超过 1.8 秒、回合/观察可见性/武器/物品版本发生变化时丢弃；应用前重算路线风险。战术有效期 1.8 秒。SDK 坦克请求超时 2.5 秒，前端 3 秒；导演仍为 7/8.5 秒。失败退避 2 秒，危险事件不能绕过退避。暂停、重开与回合结束会使旧请求失效。
-- **可观察性**：目标间隔、实际应用间隔、端到端耗时、本地避险次数、过期决策丢弃数和射击类型显示在面板。置信度不是胜率。
-
-服务端默认仅监听 127.0.0.1；当前是单浏览器本机 Demo，不是带账户、配额管理和服务端权威模拟的公共多人服务。本地练习共享战斗控制器，但战术仍是规则选择，不代表 Jev 的决策质量。
-
-## 目录
-
-- `web/src/game.ts`：状态、武器物理、候选方案、异步 Jev 调度、导演
-- `web/src/combat.ts`：提前量、反弹射击、共享炮弹物理、危险预演
-- `web/src/navigation.ts`：地图、A*、碰撞、射线
-- `web/src/render.ts`：高 DPI Canvas 渲染
-- `web/src/main.tsx`：页面、键鼠、状态面板
-- `server/app.ts`：健康检查、请求校验、Jev SDK、超时与频率限制
-- `shared/types.ts`：前后端数据类型
-
-## 验证
+## Commands
 
 ```sh
-npm test
-npm run build
-npm run benchmark  # 离线固定来弹场景，不调用 Jev
-npm run verify:jev # 显式进行 4 次真实 Jev 决策，使用 .env，会产生 API 用量
+npm run dev        # Start the development server and web app
+npm test           # Run the test suite
+npm run build      # Type-check and create a production build
+npm start          # Serve the production build on 127.0.0.1:3001
+npm run benchmark  # Run the offline combat benchmark
+npm run verify:jev # Make live Jev verification calls (uses API credits)
 ```
 
-测试包含确定性物理和服务端注入 fixture。它们不证明 Jev 的实际延迟、准确性或游戏强度。真实 API 快照验证与完整对战胜率测评是不同的验证，不能把前者称为战无不胜。调用延迟与 token 在真实成功响应后显示；置信度不代表胜率，动态标签来自被选方案，不是模型推理解释。
+## How Jev Controls the Tank
 
-## Jev 直接操作（新增实验模式）
+The game sends Jev a compact observation of the arena plus a list of valid control candidates. Each candidate combines movement, a semantic aim mode, and whether to fire. Candidates include predicted movement, wall clearance, danger, and verified shot trajectories.
 
-页面选择「Jev 直接操作」。保留原来的「Jev 战术」与「本地练习」供对照。
+Jev returns a typed choice and a probability distribution. The game applies the selected action for a limited time while continuing to simulate physics locally. Invalid, unsafe, late, or outdated actions are rejected.
 
-每回合会从当前地图的可通行格中随机生成双方坦克。出生点保证不在墙内、不重叠、彼此可达，路线至少跨越七步且直线距离至少六格；两辆坦克初始炮口朝向对方。
+## License
 
-同一次 System One 请求只发送一个 `control` Choice。每个候选组合移动方向、语义化瞄准模式和扳机状态，避免三个独立答案互相矛盾。Jev不再从固定角度中猜测，而是选择 `TRACK`、`DIRECT SHOT`、`BANK SHOT` 或 `MINE`。本地瞄准层像玩家持续移动鼠标一样，每帧根据玩家当前位置和已观测速度更新炮管；直射或反弹路径失效时立即松开扳机并请求新决策。瞄准只使用当前可见状态，不读取玩家未来输入。
-
-直接模式不再向 Jev 发送原始 `0/1` 地图。本地导航持有地图，只发送到玩家的路线长度和转折点，类似 JevPilot 的导航提示。每个完整控制候选附带未来 1.25 秒的真实物理结果：终点、位移、受阻方向、墙面间距、路线进度、危险、是否存在验证命中、反弹次数和预计命中时间。双方状态及子弹、道具、地雷和激光使用紧凑表格发送；不读取玩家按键或未来输入。候选生成描述后果，不替 Jev 选择。本地不调用追击驾驶、自动修正瞄准或紧急闪避。旧战术模式保留原逻辑用于对照。
-
-子弹状态还包含未来 1.25 秒的采样轨迹和每次反弹点。规则明确告诉 Jev：炮弹在 180ms 发射保护期后可以击中发射者；每个完整控制候选单独标出预计被己方炮弹命中的时间。轨迹和候选危险使用与实际游戏相同的碰撞与反弹积分器。
-
-直接控制候选会先做可行性裁剪：1.25秒内实际位移不足24px的撞墙方向不发送给Jev；新发射炮弹若在3秒模拟窗口内先反弹命中自己，该开火组合也不会发送；存在确定无碰撞动作时，预计会被当前任一弹道命中的动作也会被裁掉。每个保留候选的移动距离、受阻轴、墙面距离、路线进度、危险与射击结果同时写入 Choice 选项描述，避免只让模型在 `c0/c1` 编号之间盲选。
-
-普通炮、机关枪和激光的开火组合只有在相同物理积分器确认可以命中玩家时才会进入 Choice；无预测命中的试探射击不再提供。每个保留的开火组合包含从炮口到命中点的采样轨迹、反弹点、命中时间和反弹次数，因此墙后目标只有存在经过验证的反弹弹道时才允许开火。地雷使用独立的安全撤离判断。
-
-请求目标间隔250ms，一次最多一个坦克请求。等待或失败不暂停物理和渲染，不立即清空有效输入；操作从应用起最多保持1.8秒（同时检查实际时钟与游戏时钟），到期松开移动/开火。观察超过1.8秒的回复丢弃，换回合/暂停/重开或武器改变也会使在途指令失效。SDK超时2.5秒，浏览器超时3秒；失败后至少500ms再请求。网络慢时会出现松键空窗，这是实验事实，不用规则AI掩盖。
-
-道具导演仍独立调用。状态面板可导出最近200次直接操作的观察、候选表、选择、应用时刻与过期/失败状态，不包含密钥。测试验证异步执行、超时、失效处理、单一 Choice 和完整候选执行；不代表已验证模型的实际命中率或胜率。
-
-开启页面的路径显示后，直接操作模式会画出九个移动方向的预测终点；受阻轨迹为橙色，Jev 选中的移动为亮色粗线，虚线表示该候选的炮口方向。每条路径旁的百分比来自 Jev 返回的完整 `probabilities` 分布：系统把移动方向相同、但瞄准和开火不同的完整控制候选概率相加，因此它表示该移动路径的边际概率，不是置信度或胜率。
+MIT
