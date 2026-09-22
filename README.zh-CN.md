@@ -8,7 +8,7 @@ Jev 不仅控制对手，也可以担任竞技场导演，决定何时、在何�
 
 ## 演示
 
-[观看游戏演示视频](docs/assets/jev-tank-arena-demo.mp4?raw=1)
+https://github.com/user-attachments/assets/d393b1f0-dde2-4980-8c67-132b7136fd00
 
 ## 功能特色
 
