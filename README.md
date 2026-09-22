@@ -1,5 +1,7 @@
 # Jev Tank Arena
 
+[English](README.md) | [简体中文](README.zh-CN.md)
+
 A browser-based tank battle where you fight an AI-controlled opponent powered by Jev.
 
 You control the green tank. Jev controls the orange tank and can also act as the arena director, deciding when and where weapon pickups appear. The game combines AI decisions with deterministic local physics, pathfinding, trajectory prediction, and collision detection.
