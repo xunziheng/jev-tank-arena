@@ -2,7 +2,7 @@ import { MOVES } from "../../shared/controls";
 import {
   advanceProjectile,
   findShot,
-  traceShot,
+  selfHitTimeForShot,
   interceptTime,
   predictedPosition,
   forecastHazards,
@@ -110,7 +110,7 @@ type DirectControlCandidate = {
   id: string;
   kind: string;
   move: string;
-  aim: number;
+  aimMode: "track" | "direct" | "bank" | "mine";
   fire: boolean;
   durationMs: number;
   motion: ReturnType<Game["previewDirectMove"]>;
@@ -124,6 +124,7 @@ type DirectControlCandidate = {
     bounces: number | null;
     hitIn: number | null;
     mine: boolean;
+    path: number[][];
   };
 };
 export class Game {
@@ -194,10 +195,15 @@ export class Game {
   disposed = false;
   directInput: {
     move: string;
-    aim: number;
+    aimMode: "track" | "direct" | "bank" | "mine";
     fire: boolean;
     at: number;
     wall: number;
+  } | null = null;
+  directAimCache: {
+    mode: "direct" | "bank";
+    checkedAt: number;
+    shot: Shot | null;
   } | null = null;
   velocity = { x: 0, y: 0 };
   selfVelocity = { x: 0, y: 0 };
@@ -309,6 +315,7 @@ export class Game {
     this.epoch++;
     this.finishDirectAction();
     this.directInput = null;
+    this.directAimCache = null;
     this.selfVelocity = { x: 0, y: 0 };
     this.velocity = { x: 0, y: 0 };
     for (const c of this.controllers) c.abort();
@@ -1145,6 +1152,71 @@ export class Game {
       enemyDistanceChangePx: Math.round(afterEnemy - beforeEnemy),
     };
   }
+  previewShotPath(
+    angle: number,
+    weapon: Weapon,
+    stopAt: number | null = null,
+  ) {
+    if (weapon === "mine")
+      return [[0, Math.round(this.ai.x), Math.round(this.ai.y), 0]];
+    const start = {
+      x: this.ai.x + Math.cos(angle) * 23,
+      y: this.ai.y + Math.sin(angle) * 23,
+    };
+    if (weapon === "laser") {
+      const end = rayEnd(this.grid, start, angle);
+      return [
+        [0, Math.round(start.x), Math.round(start.y), 0],
+        [650, Math.round(end.x), Math.round(end.y), 0],
+      ];
+    }
+    const bullet: Bullet = {
+      ...start,
+      vx: Math.cos(angle) * 220,
+      vy: Math.sin(angle) * 220,
+      owner: "ai",
+      age: 0,
+      bounces: 0,
+    };
+    const horizon = Math.min(1.8, stopAt ?? 1.8);
+    const points: number[][] = [
+      [0, Math.round(bullet.x), Math.round(bullet.y), bullet.bounces],
+    ];
+    let previousBounces = bullet.bounces,
+      lastSample = 0;
+    for (
+      let t = PREDICTION_STEP;
+      t <= horizon + 1e-6;
+      t += PREDICTION_STEP
+    ) {
+      const alive = advanceProjectile(this.grid, bullet, PREDICTION_STEP);
+      const atEnd = t + PREDICTION_STEP > horizon;
+      if (
+        bullet.bounces !== previousBounces ||
+        Math.round(t * 1000) % 250 === 0 ||
+        atEnd ||
+        !alive
+      ) {
+        lastSample = Math.round(t * 1000);
+        points.push([
+          lastSample,
+          Math.round(bullet.x),
+          Math.round(bullet.y),
+          bullet.bounces,
+        ]);
+      }
+      previousBounces = bullet.bounces;
+      if (!alive) break;
+    }
+    if (stopAt !== null && lastSample < Math.round(horizon * 1000))
+      points.push([
+        Math.round(horizon * 1000),
+        Math.round(bullet.x),
+        Math.round(bullet.y),
+        bullet.bounces,
+      ]);
+    return points;
+  }
   routeGuidance() {
     const path = astar(this.grid, cell(this.ai), cell(this.player));
     if (!path.length) return { reachable: false, lengthCells: null, turns: [] };
@@ -1189,9 +1261,78 @@ export class Game {
       if (this.directAction.blockedMs >= 100)
         this.nextThink = Math.min(this.nextThink, this.time);
     }
-    // Match player's immediate mouse-angle control; no automatic target tracking.
-    this.ai.turret = c.aim;
-    if (c.fire) this.shoot(this.ai);
+    const aim = this.resolveDirectAim(c.aimMode, c.move);
+    this.ai.turret = aim.angle;
+    if (c.fire && aim.canFire) this.shoot(this.ai);
+    if (c.fire && !aim.canFire)
+      this.nextThink = Math.min(this.nextThink, this.time);
+  }
+  trackingAngle(target: Observation) {
+    if (this.ai.weapon === "mine") return this.ai.turret;
+    const leadTime =
+      this.ai.weapon === "laser"
+        ? 0.65
+        : Math.min(
+            1.8,
+            Math.max(
+              0,
+              interceptTime(this.ai, target, target.velocity) - 23 / 220,
+            ),
+          );
+    const point = predictedPosition(
+      this.grid,
+      target,
+      target.velocity,
+      leadTime,
+    );
+    return Math.atan2(point.y - this.ai.y, point.x - this.ai.x);
+  }
+  resolveDirectAim(
+    mode: "track" | "direct" | "bank" | "mine",
+    move: string,
+  ) {
+    const target: Observation = {
+      x: this.player.x,
+      y: this.player.y,
+      velocity: { ...this.velocity },
+      seenAt: this.time,
+    };
+    const tracking = this.trackingAngle(target);
+    if (mode === "track") return { angle: tracking, canFire: false };
+    const path = [this.previewDirectMove(move).end];
+    if (mode === "mine")
+      return {
+        angle: this.ai.turret,
+        canFire:
+          this.ai.weapon === "mine" &&
+          selfHitTimeForShot(
+            this.grid,
+            this.ai,
+            target,
+            this.ai.turret,
+            "mine",
+            path,
+          ) === null,
+      };
+    if (
+      !this.directAimCache ||
+      this.directAimCache.mode !== mode ||
+      this.time - this.directAimCache.checkedAt >= 0.075
+    )
+      this.directAimCache = {
+        mode,
+        checkedAt: this.time,
+        shot: findShot(
+          this.grid,
+          this.ai,
+          target,
+          this.ai.weapon,
+          mode,
+          path,
+        ),
+      };
+    const shot = this.directAimCache.shot;
+    return { angle: shot?.angle ?? tracking, canFire: Boolean(shot) };
   }
   directControlCandidates(): DirectControlCandidate[] {
     const target: Observation = {
@@ -1200,54 +1341,6 @@ export class Game {
       velocity: { ...this.velocity },
       seenAt: this.time,
     };
-    const bearing = Math.atan2(
-      this.player.y - this.ai.y,
-      this.player.x - this.ai.x,
-    );
-    const leadTime = Math.min(
-      1.8,
-      Math.max(0, interceptTime(this.ai, target, target.velocity) - 23 / 220),
-    );
-    const leadPoint = predictedPosition(
-      this.grid,
-      target,
-      target.velocity,
-      this.ai.weapon === "laser" ? 0.65 : leadTime,
-    );
-    const leadAngle = Math.atan2(
-      leadPoint.y - this.ai.y,
-      leadPoint.x - this.ai.x,
-    );
-    const direct = findShot(
-      this.grid,
-      this.ai,
-      target,
-      this.ai.weapon,
-      "direct",
-    );
-    const bank = findShot(this.grid, this.ai, target, this.ai.weapon, "bank");
-    const actions: { kind: string; angle: number; fire: boolean }[] = [];
-    const addAction = (kind: string, angle: number, fire: boolean) => {
-      const normalized =
-        ((angle % (Math.PI * 2)) + Math.PI * 2) % (Math.PI * 2);
-      const key = `${normalized.toFixed(3)}:${fire}`;
-      if (actions.some((a) => `${a.angle.toFixed(3)}:${a.fire}` === key))
-        return;
-      actions.push({ kind, angle: normalized, fire });
-    };
-    addAction("hold", this.ai.turret, false);
-    addAction("current_fire", this.ai.turret, true);
-    addAction("track", bearing, false);
-    if (this.ai.weapon === "mine")
-      addAction("deploy_mine", this.ai.turret, true);
-    else {
-      addAction("bearing_fire", bearing, true);
-      addAction("lead_fire", direct?.angle ?? leadAngle, true);
-      addAction("left_probe", bearing - (12 * Math.PI) / 180, true);
-      addAction("right_probe", bearing + (12 * Math.PI) / 180, true);
-      if (bank) addAction("bank_fire", bank.angle, true);
-    }
-
     const hazards = forecastHazards(
       this.grid,
       this.bullets,
@@ -1262,6 +1355,14 @@ export class Game {
     const result: DirectControlCandidate[] = [];
     for (const move of Object.keys(MOVES)) {
       const motion = this.previewDirectMove(move);
+      if (
+        move !== "stop" &&
+        (motion.movedPx < 24 ||
+          (this.lastDirectOutcome?.move === move &&
+            this.lastDirectOutcome.blockedMs >= 100 &&
+            this.lastDirectOutcome.displacementPx < 12))
+      )
+        continue;
       const path = [motion.end];
       const assessment = assessMotion(
         this.grid,
@@ -1284,22 +1385,82 @@ export class Game {
         motion.endCell,
         cell(this.player),
       ).length;
+      const actions: {
+        kind: string;
+        aimMode: "track" | "direct" | "bank" | "mine";
+        angle: number;
+        fire: boolean;
+        verified: Shot | null;
+      }[] = [
+        {
+          kind: "track",
+          aimMode: "track",
+          angle: this.trackingAngle(target),
+          fire: false,
+          verified: null,
+        },
+      ];
+      if (this.ai.weapon === "mine")
+        actions.push({
+          kind: "deploy_mine",
+          aimMode: "mine",
+          angle: this.ai.turret,
+          fire: true,
+          verified: null,
+        });
+      else {
+        const direct = findShot(
+          this.grid,
+          this.ai,
+          target,
+          this.ai.weapon,
+          "direct",
+          path,
+        );
+        if (direct)
+          actions.push({
+            kind: "direct_shot",
+            aimMode: "direct",
+            angle: direct.angle,
+            fire: true,
+            verified: direct,
+          });
+        const bank = findShot(
+          this.grid,
+          this.ai,
+          target,
+          this.ai.weapon,
+          "bank",
+          path,
+        );
+        if (bank)
+          actions.push({
+            kind: "bank_shot",
+            aimMode: "bank",
+            angle: bank.angle,
+            fire: true,
+            verified: bank,
+          });
+      }
       for (const action of actions) {
-        const verified = action.fire
-          ? traceShot(
+        const newSelfHitIn = action.fire
+          ? selfHitTimeForShot(
               this.grid,
               this.ai,
-              action.angle,
               target,
+              action.angle,
               this.ai.weapon,
               path,
             )
           : null;
+        if (newSelfHitIn !== null) continue;
+        const verified = action.verified;
+        if (action.fire && this.ai.weapon !== "mine" && !verified) continue;
         result.push({
           id: `c${result.length}`,
           kind: `${move}:${action.kind}`,
           move,
-          aim: action.angle,
+          aimMode: action.aimMode,
           fire: action.fire,
           durationMs: motion.horizonMs,
           motion,
@@ -1315,12 +1476,18 @@ export class Game {
                 bounces: verified?.bounces ?? null,
                 hitIn: verified?.flightTime ?? null,
                 mine: this.ai.weapon === "mine",
+                path: this.previewShotPath(
+                  action.angle,
+                  this.ai.weapon,
+                  verified?.flightTime ?? null,
+                ),
               }
             : null,
         });
       }
     }
-    return result;
+    const collisionFree = result.filter((candidate) => candidate.hitIn === null);
+    return collisionFree.length ? collisionFree : result;
   }
   movementProbabilities() {
     const totals: Record<string, number> = {};
@@ -1455,13 +1622,13 @@ export class Game {
       controlCandidates: {
         horizonMs: 1250,
         columns:
-          "move,aim_deg,fire,end_x,end_y,moved_px,blocked_axes,wall_clearance_px,route_remaining_cells,route_progress_cells,danger,hit_in_s,self_projectile_hit_in_s,shot_hit,shot_bounces,shot_hit_in_s,mine",
+          "move,aim_mode,fire,end_x,end_y,moved_px,blocked_axes,wall_clearance_px,route_remaining_cells,route_progress_cells,danger,hit_in_s,self_projectile_hit_in_s,shot_hit,shot_bounces,shot_hit_in_s,mine,shot_path[t_ms,x,y,bounces]",
         rows: Object.fromEntries(
           candidates.map((c) => [
             c.id,
             [
               c.move,
-              Math.round((c.aim * 180) / Math.PI),
+              c.aimMode,
               c.fire,
               c.motion.end.x,
               c.motion.end.y,
@@ -1481,6 +1648,7 @@ export class Game {
                 ? null
                 : Number(c.shot.hitIn.toFixed(2)),
               c.shot?.mine ?? false,
+              c.shot?.path ?? null,
             ],
           ]),
         ),
@@ -1530,7 +1698,20 @@ export class Game {
         state,
         candidates: controls.map((c) => ({
           id: c.id,
-          description: `${c.kind}; authoritative outcome is row ${c.id} in state.controlCandidates`,
+          description: [
+            `${c.kind}: move ${c.motion.movedPx}px over ${c.durationMs}ms`,
+            `blocked=${c.motion.blockedAxes.join("") || "none"}`,
+            `wall_clearance=${c.motion.minimumWallClearancePx}px`,
+            `route_progress=${c.routeProgressCells ?? "unreachable"}`,
+            `danger=${c.danger}/100`,
+            `incoming_hit=${c.hitIn === null ? "none" : c.hitIn.toFixed(2) + "s"}`,
+            `existing_self_projectile_hit=${c.selfProjectileHitIn === null ? "none" : c.selfProjectileHitIn.toFixed(2) + "s"}`,
+            c.fire
+              ? c.shot?.hit
+                ? `fire=verified_hit in ${c.shot.hitIn?.toFixed(2) ?? "unknown"}s, bounces=${c.shot.bounces ?? 0}, shot_path=${JSON.stringify(c.shot.path)}`
+                : "fire=mine_deployment"
+              : "fire=off",
+          ].join("; "),
           distance: c.motion.movedPx,
           risk: c.danger,
           fire: c.fire,
@@ -1562,11 +1743,12 @@ export class Game {
       this.finishDirectAction();
       this.directInput = {
         move: selected.move,
-        aim: selected.aim,
+        aimMode: selected.aimMode,
         fire: selected.fire,
         at: this.time,
         wall: this.clock(),
       };
+      this.directAimCache = null;
       this.directAction = {
         move: selected.move,
         startedAt: this.time,
@@ -1591,7 +1773,7 @@ export class Game {
       trace.applied = this.clock();
       this.log(
         "OPPONENT",
-        `${selected.move} · ${((selected.aim * 180) / Math.PI).toFixed(1)}° · ${selected.fire ? "fire" : "hold"}`,
+        `${selected.move} · ${selected.aimMode} · ${selected.fire ? "fire" : "hold"}`,
         "JEV INPUT",
       );
     } catch (e) {

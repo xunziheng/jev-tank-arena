@@ -55,6 +55,7 @@ test("bullets reflect off walls and can hit their owner after immunity", () => {
   const g = new Game(noNetwork);
   g.grid = openGrid();
   g.player = { ...g.player, x: 80, y: 72 };
+  g.ai = { ...g.ai, x: 400, y: 400 };
   g.bullets = [
     { x: 53, y: 72, vx: -220, vy: 0, owner: "player", age: 0.3, bounces: 0 },
   ];

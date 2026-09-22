@@ -57,7 +57,7 @@ test("forwards closed-set questions and echoes snapshot identity", async () => {
   assert.equal(r.json().choice, "hold");
   assert.equal(r.json().round, 1);
   assert.equal(question.questions.decision.type, "choice");
-  assert.equal(question.questions.decision.criteria.hold, null);
+  assert.equal(question.questions.decision.criteria.hold, "Hold position");
   assert.equal(question.state.availablePlans[0].description, "Hold position");
   await app.close();
 });

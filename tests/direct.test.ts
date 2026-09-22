@@ -8,7 +8,7 @@ import type { DecisionRequest, DecisionResponse } from "../shared/types";
 
 const responseFor = (
   body: DecisionRequest,
-  kind = "right:hold",
+  kind = "right:track",
 ): DecisionResponse => {
   const candidate =
     body.candidates.find((item) => item.kind === kind) ?? body.candidates[0];
@@ -86,6 +86,8 @@ test("direct control asks one Choice for a complete candidate", async () => {
     "c0",
     "c1",
   ]);
+  assert.equal(request.questions.control.criteria.c0, "first");
+  assert.equal(request.questions.control.criteria.c1, "second");
   assert.equal(request.state.availablePlans, undefined);
   await app.close();
 });
@@ -114,16 +116,34 @@ test("server rejects a control choice outside the offered batch", async () => {
   await app.close();
 });
 
-test("candidate selection executes bundled movement, aim and trigger", async () => {
+test("candidate selection executes movement with continuous target tracking", async () => {
   const { g } = setup();
   await g.thinkDirect();
   g.nextThink = Infinity;
   for (let i = 0; i < 10; i++) g.update(0.02);
   assert.ok(g.ai.x > 300);
-  assert.equal(g.ai.turret, 0);
+  const firstAngle = g.ai.turret;
+  assert.notEqual(firstAngle, 0);
   assert.equal(g.bullets.length, 0);
-  g.directInput!.fire = true;
+  g.player.y += 80;
+  g.velocity = { x: 0, y: 100 };
   g.update(0.02);
+  assert.notEqual(g.ai.turret, firstAngle);
+});
+
+test("verified fire intent continuously aims and fires", async () => {
+  const { g } = setup(async (body) => {
+    const direct = body.candidates.find((item) =>
+      item.kind?.endsWith(":direct_shot"),
+    );
+    if (!direct) throw Error("fixture expected a verified direct shot");
+    return responseFor(body, direct.kind);
+  });
+  Object.assign(g.player, { x: 430, y: 300 });
+  await g.thinkDirect();
+  g.nextThink = Infinity;
+  g.update(0.02);
+  assert.equal(g.directInput?.aimMode, "direct");
   assert.equal(g.bullets.length, 1);
 });
 
@@ -137,7 +157,13 @@ test("pending request keeps the world running and stale response is ignored", as
         resolve = done;
       }),
   );
-  g.directInput = { move: "right", aim: 0, fire: false, at: 0, wall: 0 };
+  g.directInput = {
+    move: "right",
+    aimMode: "track",
+    fire: false,
+    at: 0,
+    wall: 0,
+  };
   const pending = g.thinkDirect();
   g.keys.add("KeyD");
   g.update(0.02);
@@ -161,7 +187,13 @@ test("failure preserves unexpired input and cannot overlap requests", async () =
     count++;
     return new Promise((_, fail) => (reject = fail));
   });
-  g.directInput = { move: "right", aim: 0, fire: false, at: 0, wall: 0 };
+  g.directInput = {
+    move: "right",
+    aimMode: "track",
+    fire: false,
+    at: 0,
+    wall: 0,
+  };
   const pending = g.thinkDirect();
   await g.thinkDirect();
   assert.equal(count, 1);
@@ -226,18 +258,28 @@ test("candidates bundle movement, navigation, danger and fire", () => {
     new Set(candidates.map((item) => item.id)).size,
     candidates.length,
   );
-  const left = candidates.find((item) => item.kind === "left:hold")!;
-  const right = candidates.find((item) => item.kind === "right:hold")!;
-  assert.equal(left.motion.blocked, true);
-  assert.ok(left.motion.movedPx < right.motion.movedPx);
-  assert.equal(left.motion.blockedAxes.includes("x"), true);
+  const left = candidates.find((item) => item.kind === "left:track");
+  const right = candidates.find((item) => item.kind === "right:track")!;
+  assert.equal(left, undefined);
+  assert.ok(right.motion.movedPx >= 24);
   assert.ok(candidates.some((item) => item.fire && item.shot?.hit));
+  assert.equal(
+    candidates.every((item) => !item.fire || item.shot?.hit),
+    true,
+  );
   const state = g.controlObservation(candidates);
   assert.equal(
     Object.keys(state.controlCandidates.rows).length,
     candidates.length,
   );
   assert.equal(state.navigationToEnemy.reachable, true);
+  const fire = candidates.find((item) => item.fire)!;
+  assert.ok((fire.shot?.path.length || 0) >= 2);
+  const shotPathIndex = state.controlCandidates.columns
+    .split(",")
+    .indexOf("shot_path[t_ms");
+  assert.ok(shotPathIndex >= 0);
+  assert.ok(Array.isArray(state.controlCandidates.rows[fire.id].at(-1)));
   const requestBytes = JSON.stringify({
     role: "controls",
     round: 1,
@@ -270,17 +312,28 @@ test("Jev receives ricochet trajectories and explicit self-fire impacts", () => 
     },
   ];
   const candidates = g.directControlCandidates();
-  const stop = candidates.find((item) => item.kind === "stop:hold")!;
-  assert.ok(stop.selfProjectileHitIn !== null);
+  assert.equal(candidates.some((item) => item.kind === "stop:track"), false);
+  assert.equal(candidates.every((item) => item.hitIn === null), true);
   const state = g.controlObservation(candidates);
   assert.equal(state.bulletTrajectories.rows[0][1], "ai");
   assert.equal(state.bulletTrajectories.rows[0][2], 0);
   assert.ok((state.bulletTrajectories.rows[0][3] as number[][]).length >= 6);
   assert.match(state.bulletTrajectories.rule, /including their owner/);
-  const columns = state.controlCandidates.columns.split(",");
-  const selfHitIndex = columns.indexOf("self_projectile_hit_in_s");
-  assert.ok(selfHitIndex >= 0);
-  assert.ok(state.controlCandidates.rows[stop.id][selfHitIndex] !== null);
+  assert.ok(
+    state.controlCandidates.columns.includes("self_projectile_hit_in_s"),
+  );
+});
+
+test("unsafe new shots and immobile wall controls are not offered to Jev", () => {
+  const { g } = setup();
+  Object.assign(g.ai, { x: 72, y: 72, turret: 0 });
+  Object.assign(g.player, { x: 500, y: 400 });
+  g.grid[1][3] = 1;
+  const candidates = g.directControlCandidates();
+  assert.equal(candidates.some((item) => item.move === "left"), false);
+  assert.equal(candidates.some((item) => item.move === "up"), false);
+  assert.equal(candidates.every((item) => !item.fire), true);
+  assert.ok(candidates.some((item) => !item.fire));
 });
 
 test("movement probabilities aggregate Jev's complete control candidates", () => {
@@ -299,10 +352,26 @@ test("movement probabilities aggregate Jev's complete control candidates", () =>
 });
 
 test("current and completed controls report collision outcome", async () => {
-  const { g } = setup(async (body) => responseFor(body, "left:hold"));
+  const { g } = setup();
   Object.assign(g.ai, { x: 312, y: 312 });
   g.grid[6][5] = 1;
-  await g.thinkDirect();
+  g.directInput = {
+    move: "left",
+    aimMode: "track",
+    fire: false,
+    at: 0,
+    wall: 0,
+  };
+  g.directAction = {
+    move: "left",
+    startedAt: 0,
+    start: { x: g.ai.x, y: g.ai.y },
+    end: { x: g.ai.x, y: g.ai.y },
+    movedPx: 0,
+    blockedMs: 0,
+    blockedXMs: 0,
+    blockedYMs: 0,
+  };
   g.nextThink = Infinity;
   for (let i = 0; i < 12; i++) g.update(0.025);
   const active = g.controlObservation();

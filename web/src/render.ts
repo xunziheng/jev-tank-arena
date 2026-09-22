@@ -93,14 +93,18 @@ export function render(ctx: CanvasRenderingContext2D, g: Game) {
     const selected = g.directCandidates.find(
       (candidate) => candidate.id === g.selectedControlId,
     );
-    for (const candidate of movements.values()) {
+    const liveMovements = [...movements.values()].map((candidate) => ({
+      candidate,
+      motion: g.previewDirectMove(candidate.move),
+    }));
+    for (const { candidate, motion } of liveMovements) {
       const active = candidate.move === selected?.move;
       ctx.beginPath();
-      ctx.moveTo(candidate.motion.start.x, candidate.motion.start.y);
-      ctx.lineTo(candidate.motion.end.x, candidate.motion.end.y);
+      ctx.moveTo(motion.start.x, motion.start.y);
+      ctx.lineTo(motion.end.x, motion.end.y);
       ctx.strokeStyle = active
         ? "#ffc08c"
-        : candidate.motion.blocked
+        : motion.blocked
           ? "#f08b6a55"
           : "#73bfa744";
       ctx.lineWidth = active ? 3 : 1.25;
@@ -108,8 +112,8 @@ export function render(ctx: CanvasRenderingContext2D, g: Game) {
       ctx.fillStyle = active ? "#ffc08c" : "#6f9188";
       ctx.beginPath();
       ctx.arc(
-        candidate.motion.end.x,
-        candidate.motion.end.y,
+        motion.end.x,
+        motion.end.y,
         active ? 4 : 2,
         0,
         Math.PI * 2,
@@ -119,19 +123,19 @@ export function render(ctx: CanvasRenderingContext2D, g: Game) {
     if (hasProbabilities) {
       ctx.font = "bold 10px monospace";
       ctx.textAlign = "center";
-      for (const candidate of movements.values()) {
+      for (const { candidate, motion } of liveMovements) {
         const text = `${moveLabels[candidate.move] || candidate.move} ${(
           (probabilities[candidate.move] || 0) * 100
         ).toFixed(1)}%`;
         const width = ctx.measureText(text).width + 10;
         const x = Math.max(
           width / 2 + 3,
-          Math.min(WIDTH - width / 2 - 3, candidate.motion.end.x),
+          Math.min(WIDTH - width / 2 - 3, motion.end.x),
         );
         const preferredY =
           candidate.move === "stop"
-            ? candidate.motion.end.y + 30
-            : candidate.motion.end.y - 11;
+            ? motion.end.y + 30
+            : motion.end.y - 11;
         const y = Math.max(14, Math.min(HEIGHT - 5, preferredY));
         ctx.fillStyle = "#081116d9";
         rounded(ctx, x - width / 2, y - 11, width, 15, 4);
@@ -142,10 +146,10 @@ export function render(ctx: CanvasRenderingContext2D, g: Game) {
     }
     if (selected) {
       ctx.beginPath();
-      ctx.moveTo(selected.motion.start.x, selected.motion.start.y);
+      ctx.moveTo(g.ai.x, g.ai.y);
       ctx.lineTo(
-        selected.motion.start.x + Math.cos(selected.aim) * 80,
-        selected.motion.start.y + Math.sin(selected.aim) * 80,
+        g.ai.x + Math.cos(g.ai.turret) * 80,
+        g.ai.y + Math.sin(g.ai.turret) * 80,
       );
       ctx.strokeStyle = selected.fire ? "#ffdb9b" : "#a9bdc5";
       ctx.setLineDash([4, 4]);

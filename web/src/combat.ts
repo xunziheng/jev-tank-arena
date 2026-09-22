@@ -176,6 +176,54 @@ export function traceShot(
   }
   return null;
 }
+export function selfHitTimeForShot(
+  grid: Grid,
+  shooter: Point,
+  target: Observation,
+  angle: number,
+  weapon: Weapon,
+  path: Point[] = [],
+  horizon = 3,
+): number | null {
+  const future = pathPrediction(grid, shooter, path, horizon, target);
+  if (weapon === "mine") {
+    const atArming = future[Math.min(future.length - 1, Math.round(1 / PREDICTION_STEP))];
+    return distance(atArming, shooter) < 27 ? 1 : null;
+  }
+  if (weapon === "laser") return null;
+  const bullet: Projectile = {
+    x: shooter.x + Math.cos(angle) * 23,
+    y: shooter.y + Math.sin(angle) * 23,
+    vx: Math.cos(angle) * BULLET_SPEED,
+    vy: Math.sin(angle) * BULLET_SPEED,
+    age: 0,
+    bounces: 0,
+    owner: "ai",
+  };
+  if (blocked(grid, bullet.x, bullet.y, 4)) return null;
+  let enemy: Point = { x: target.x, y: target.y };
+  for (let t = PREDICTION_STEP; t <= horizon + 1e-6; t += PREDICTION_STEP) {
+    enemy = predictedPosition(grid, enemy, target.velocity, PREDICTION_STEP);
+    const self = future[Math.min(future.length - 1, Math.round(t / PREDICTION_STEP))];
+    let hitSelf = false,
+      hitEnemy = false;
+    const alive = advanceProjectile(grid, bullet, PREDICTION_STEP, (projectile) => {
+      if (distance(projectile, enemy) < 17) {
+        hitEnemy = true;
+        return false;
+      }
+      if (projectile.age >= 0.18 && distance(projectile, self) < 17) {
+        hitSelf = true;
+        return false;
+      }
+      return true;
+    });
+    if (hitEnemy) return null;
+    if (hitSelf) return Number(t.toFixed(2));
+    if (!alive) return null;
+  }
+  return null;
+}
 export function findShot(
   grid: Grid,
   shooter: Point,
