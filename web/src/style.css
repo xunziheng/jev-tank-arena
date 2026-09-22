@@ -815,3 +815,10 @@ footer i {
   color: #c4d4ca;
   font-variant-numeric: tabular-nums;
 }
+
+.mode-switch {
+  flex-wrap: wrap;
+}
+.mode-switch button {
+  min-width: 0;
+}

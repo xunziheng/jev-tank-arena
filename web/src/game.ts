@@ -1,12 +1,15 @@
+import { MOVES } from "../../shared/controls";
 import {
   advanceProjectile,
   findShot,
+  traceShot,
   interceptTime,
   predictedPosition,
   forecastHazards,
   assessMotion,
   decisionInterval,
   TANK_SPEED,
+  PREDICTION_STEP,
   type Observation,
   type Hazard,
   type Shot,
@@ -95,13 +98,36 @@ export type Snapshot = {
   decisionAge: number | null;
   e2eLatency: number;
   appliedInterval: number | null;
+  controls: string;
+  controlAge: number | null;
+  candidateCount: number;
 };
 export type DecisionTransport = (
   body: DecisionRequest,
   signal: AbortSignal,
 ) => Promise<DecisionResponse>;
+type DirectControlCandidate = {
+  id: string;
+  kind: string;
+  move: string;
+  aim: number;
+  fire: boolean;
+  durationMs: number;
+  motion: ReturnType<Game["previewDirectMove"]>;
+  routeRemainingCells: number | null;
+  routeProgressCells: number | null;
+  danger: number;
+  hitIn: number | null;
+  selfProjectileHitIn: number | null;
+  shot: null | {
+    hit: boolean;
+    bounces: number | null;
+    hitIn: number | null;
+    mine: boolean;
+  };
+};
 export class Game {
-  grid: Grid = makeArena();
+  grid: Grid;
   player: Tank;
   ai: Tank;
   bullets: Bullet[] = [];
@@ -140,8 +166,8 @@ export class Game {
   reflexPath: Point[] | null = null;
   reflexUntil = 0;
   reflexCount = 0;
-  reflexLabel = "监测弹道";
-  shotType = "等待射击授权";
+  reflexLabel = "MONITORING TRAJECTORIES";
+  shotType = "AWAITING FIRE AUTHORIZATION";
   discarded = 0;
   lastAppliedAt = -1;
   appliedInterval: number | null = null;
@@ -157,7 +183,7 @@ export class Game {
   calls = 0;
   tokens = 0;
   error = "";
-  director = "等待战场开始";
+  director = "WAITING FOR BATTLE";
   nextThink = 0;
   nextDirector = 2;
   pending = false;
@@ -166,31 +192,113 @@ export class Game {
   nextId = 1;
   controllers = new Set<AbortController>();
   disposed = false;
+  directInput: {
+    move: string;
+    aim: number;
+    fire: boolean;
+    at: number;
+    wall: number;
+  } | null = null;
+  velocity = { x: 0, y: 0 };
+  selfVelocity = { x: 0, y: 0 };
+  directAction: {
+    move: string;
+    startedAt: number;
+    start: Point;
+    end: Point;
+    movedPx: number;
+    blockedMs: number;
+    blockedXMs: number;
+    blockedYMs: number;
+  } | null = null;
+  lastDirectOutcome: {
+    move: string;
+    durationMs: number;
+    start: Point;
+    end: Point;
+    displacementPx: number;
+    pathLengthPx: number;
+    blockedMs: number;
+    blockedAxes: string[];
+  } | null = null;
+  directCandidates: DirectControlCandidate[] = [];
+  selectedControlId = "";
+  controlProbabilities: Record<string, number> = {};
+  directTrace: {
+    at: number;
+    state: Record<string, unknown>;
+    result?: unknown;
+    applied?: number;
+    status: string;
+  }[] = [];
+  directStatus() {
+    const c = this.directInput;
+    return c && this.clock() - c.wall < 1800 && this.time - c.at < 1.8;
+  }
+
   constructor(
     public transport: DecisionTransport,
     public clock: () => number = () => performance.now(),
+    public random: () => number = Math.random,
   ) {
-    this.player = this.newTank("player");
-    this.ai = this.newTank("ai");
+    this.grid = makeArena(this.random);
+    [this.player, this.ai] = this.spawnTanks();
   }
-  newTank(id: "player" | "ai"): Tank {
+  newTank(id: "player" | "ai", spawn: Point, angle: number): Tank {
     return {
-      ...center(
-        id === "player" ? { x: 1, y: 1 } : { x: COLS - 2, y: ROWS - 2 },
-      ),
+      ...center(spawn),
       id,
-      angle: id === "player" ? 0 : Math.PI,
-      turret: id === "player" ? 0 : Math.PI,
+      angle,
+      turret: angle,
       hp: 3,
       weapon: "normal",
       ammo: 0,
       cooldown: 0,
     };
   }
+  spawnTanks(): [Tank, Tank] {
+    const floors: Point[] = [];
+    for (let y = 1; y < ROWS - 1; y++)
+      for (let x = 1; x < COLS - 1; x++)
+        if (this.grid[y][x] === 0) floors.push({ x, y });
+    const playerCell = floors[Math.floor(this.random() * floors.length)];
+    const distant = floors.filter((candidate) => {
+      const route = astar(this.grid, playerCell, candidate);
+      return (
+        route.length >= 8 &&
+        distance(center(playerCell), center(candidate)) >= TILE * 6
+      );
+    });
+    const pool = distant.length
+      ? distant
+      : floors
+          .filter((candidate) => astar(this.grid, playerCell, candidate).length)
+          .sort(
+            (a, b) =>
+              distance(center(playerCell), center(b)) -
+              distance(center(playerCell), center(a)),
+          )
+          .slice(0, Math.max(1, Math.ceil(floors.length / 4)));
+    const aiCell = pool[Math.floor(this.random() * pool.length)];
+    const playerPoint = center(playerCell),
+      aiPoint = center(aiCell);
+    const playerAngle = Math.atan2(
+      aiPoint.y - playerPoint.y,
+      aiPoint.x - playerPoint.x,
+    );
+    const aiAngle = Math.atan2(
+      playerPoint.y - aiPoint.y,
+      playerPoint.x - aiPoint.x,
+    );
+    return [
+      this.newTank("player", playerCell, playerAngle),
+      this.newTank("ai", aiCell, aiAngle),
+    ];
+  }
   log(
     role: string,
     text: string,
-    source = this.mode === "jev" ? "JEV" : "LOCAL",
+    source = this.mode !== "practice" ? "JEV" : "LOCAL",
   ) {
     this.logs = [
       { id: this.nextId++, time: this.time, role, text, source },
@@ -199,6 +307,10 @@ export class Game {
   }
   invalidate() {
     this.epoch++;
+    this.finishDirectAction();
+    this.directInput = null;
+    this.selfVelocity = { x: 0, y: 0 };
+    this.velocity = { x: 0, y: 0 };
     for (const c of this.controllers) c.abort();
     this.controllers.clear();
     this.pending = false;
@@ -217,13 +329,14 @@ export class Game {
     this.invalidate();
     this.mode = mode;
     this.running = false;
-    this.grid = makeArena();
+    this.grid = makeArena(this.random);
     this.round = 1;
     this.time = 0;
     this.score = [0, 0];
     this.winner = "";
     this.logs = [];
     this.error = "";
+    this.directTrace = [];
     this.calls = 0;
     this.tokens = 0;
     this.latency = 0;
@@ -234,9 +347,12 @@ export class Game {
   }
   newRound() {
     this.invalidate();
+    this.lastDirectOutcome = null;
+    this.directCandidates = [];
+    this.selectedControlId = "";
+    this.controlProbabilities = {};
     this.revision++;
-    this.player = this.newTank("player");
-    this.ai = this.newTank("ai");
+    [this.player, this.ai] = this.spawnTanks();
     this.bullets = [];
     this.pickups = [];
     this.mines = [];
@@ -261,7 +377,7 @@ export class Game {
     this.lastAttemptAt = -Infinity;
     this.nextThink = this.time;
     this.nextDirector = this.time + 1;
-    this.director = "等待投放时机";
+    this.director = "AWAITING DROP WINDOW";
   }
   dispose() {
     this.disposed = true;
@@ -277,7 +393,10 @@ export class Game {
       weapons: [this.player.weapon, this.ai.weapon],
       ammo: [this.player.ammo, this.ai.ammo],
       time: this.time,
-      plan: this.plan?.label || "等待决策",
+      plan:
+        this.mode === "direct"
+          ? "JEV DIRECT CONTROL"
+          : this.plan?.label || "WAITING FOR DECISION",
       director: this.director,
       pending: this.pending,
       latency: this.latency,
@@ -288,11 +407,28 @@ export class Game {
       logs: this.logs,
       winner: this.winner,
       roundOver: this.roundOver,
-      cadence: Math.round(this.cadence() * 1000),
-      reflex: this.reflexPath ? "本地紧急闪避" : "监测弹道",
+      cadence: this.mode === "direct" ? 250 : Math.round(this.cadence() * 1000),
+      reflex:
+        this.mode === "direct"
+          ? "ASSISTS OFF"
+          : this.reflexPath
+            ? "LOCAL EMERGENCY DODGE"
+            : "MONITORING TRAJECTORIES",
       reflexCount: this.reflexCount,
       discarded: this.discarded,
-      shotType: this.shotType,
+      shotType:
+        this.mode === "direct"
+          ? this.directStatus()
+            ? "JEV INPUT ACTIVE"
+            : "INPUT EXPIRED / WAITING"
+          : this.shotType,
+      controls: this.directInput
+        ? `${this.directStatus() ? this.directInput.move : "stop"} · ${(((this.ai.turret * 180) / Math.PI + 360) % 360).toFixed(1)}° · ${this.directStatus() && this.directInput.fire ? "FIRE" : "HOLD"}`
+        : "stop · WAITING FOR JEV",
+      controlAge: this.directInput
+        ? Math.round(this.clock() - this.directInput.wall)
+        : null,
+      candidateCount: this.directCandidates.length,
       decisionAge:
         this.lastAppliedAt < 0
           ? null
@@ -401,14 +537,22 @@ export class Game {
     const dy =
       Number(this.keys.has("KeyS") || this.keys.has("ArrowDown")) -
       Number(this.keys.has("KeyW") || this.keys.has("ArrowUp"));
+    const before = { x: this.player.x, y: this.player.y };
     this.move(this.player, dx, dy, dt);
+    this.velocity = {
+      x: (this.player.x - before.x) / dt,
+      y: (this.player.y - before.y) / dt,
+    };
     this.player.turret = Math.atan2(
       this.mouse.y - this.player.y,
       this.mouse.x - this.player.x,
     );
     if (this.mouse.down || this.keys.has("Space")) this.shoot(this.player);
-    this.observeEnemy(dt);
-    this.executeCombat(dt);
+    if (this.mode === "direct") this.executeDirect(dt);
+    else {
+      this.observeEnemy(dt);
+      this.executeCombat(dt);
+    }
     this.stepProjectiles(dt);
     for (const t of [this.player, this.ai])
       for (const p of this.pickups) {
@@ -419,8 +563,8 @@ export class Game {
           this.revision++;
           this.burst(p, WEAPONS[p.weapon].color);
           this.log(
-            t.id === "player" ? "玩家" : "对手",
-            `拾取${WEAPONS[p.weapon].name}`,
+            t.id === "player" ? "PLAYER" : "OPPONENT",
+            `PICKED UP ${WEAPONS[p.weapon].name}`,
             "GAME",
           );
           this.nextThink = Math.min(this.nextThink, this.time + 0.2);
@@ -435,21 +579,24 @@ export class Game {
       if (this.player.hp > 0) this.score[0]++;
       else if (this.ai.hp > 0) this.score[1]++;
       this.log(
-        "回合",
+        "ROUND",
         this.player.hp === 0 && this.ai.hp === 0
-          ? "同归于尽"
+          ? "DOUBLE KNOCKOUT"
           : this.player.hp > 0
-            ? "玩家拿下一分"
-            : "对手拿下一分",
+            ? "PLAYER SCORES"
+            : "OPPONENT SCORES",
         "GAME",
       );
       if (Math.max(...this.score) >= 5) {
-        this.winner = this.score[0] >= 5 ? "你赢了这场对决" : "对手赢得了比赛";
+        this.winner = this.score[0] >= 5 ? "YOU WIN" : "OPPONENT WINS";
         this.running = false;
       }
       return;
     }
-    if (this.time >= this.nextThink && !this.pending) void this.think();
+    if (this.time >= this.nextThink && !this.pending) {
+      if (this.mode === "direct") void this.thinkDirect();
+      else void this.think();
+    }
     if (this.time >= this.nextDirector && !this.directorPending)
       void this.direct();
   }
@@ -648,11 +795,11 @@ export class Game {
         this.ai.turret = Math.atan2(target.y - this.ai.y, target.x - this.ai.x);
     }
     if (!this.plan?.fire) {
-      this.shotType = "等待射击授权";
+      this.shotType = "AWAITING FIRE AUTHORIZATION";
       return;
     }
     if (this.ai.weapon === "mine") {
-      this.shotType = "检查布雷撤离路线";
+      this.shotType = "CHECKING MINE ESCAPE";
       if (this.plan.attack === "mine" && !dodging && this.safeMineEscape())
         this.shoot(this.ai);
       return;
@@ -660,7 +807,7 @@ export class Game {
     const remembered = this.shootingObservation();
     if (!remembered || (!this.enemyVisible && this.plan.attack !== "bank")) {
       this.currentShot = null;
-      this.shotType = "失去视野，停止跟踪";
+      this.shotType = "TARGET LOST";
       return;
     }
     if (this.time >= this.nextShotCheck) {
@@ -681,11 +828,11 @@ export class Game {
         this.ai.turret = this.currentShot.angle;
         this.shotType = this.currentShot.bounces
           ? this.enemyVisible
-            ? "一次反弹射击"
-            : "按最近记忆反弹射击"
-          : "提前量直射";
+            ? "ONE-BOUNCE SHOT"
+            : "MEMORY BANK SHOT"
+          : "LEAD SHOT";
         if (this.ai.cooldown <= 0) this.shoot(this.ai);
-      } else this.shotType = "无安全射击窗口";
+      } else this.shotType = "NO SAFE SHOT";
     }
   }
   updateReflex() {
@@ -729,7 +876,7 @@ export class Game {
     if (!best || best.risk >= current.risk) return;
     if (!this.reflexPath || this.time >= this.reflexUntil) {
       this.reflexCount++;
-      this.log("反射层", "预测到伤害，执行紧急闪避", "LOCAL REFLEX");
+      this.log("REFLEX", "DANGER PREDICTED · EMERGENCY DODGE", "LOCAL REFLEX");
     }
     this.reflexPath = best.path;
     this.reflexUntil = this.time + 0.18;
@@ -805,11 +952,11 @@ export class Game {
         pickupId,
       });
     };
-    add("hold", "观察战场", "Hold current position without firing.", this.ai);
+    add("hold", "HOLD AND OBSERVE", "Hold current position without firing.", this.ai);
     if (hasShot) {
       add(
         "fire",
-        "瞄准开火",
+        "AIM AND FIRE",
         this.ai.weapon === "mine"
           ? "Deploy a mine at current location."
           : "Fire at the last observed enemy position; line of sight is clear.",
@@ -820,7 +967,7 @@ export class Game {
     if (bank)
       add(
         "bank",
-        "反弹截击",
+        "BANK SHOT",
         this.enemyVisible
           ? "Fire a verified one-bounce shot at the currently observed enemy. Local controller continuously rechecks the shot."
           : "Fire a one-bounce shot at a frozen last-seen position less than 0.75s old. Enemy may have moved; this is uncertain, not wall vision.",
@@ -830,7 +977,7 @@ export class Game {
     if (known)
       add(
         "chase",
-        "追击目标",
+        "PURSUE TARGET",
         "Track the enemy while visible; pursue last observed position when hidden. Authorize locally verified safe shots during pursuit.",
         known,
         this.ai.weapon !== "mine",
@@ -838,7 +985,7 @@ export class Game {
     for (const p of this.pickups)
       add(
         `pickup_${p.id}`,
-        `争夺${WEAPONS[p.weapon].name}`,
+        `CLAIM ${WEAPONS[p.weapon].name}`,
         `Collect ${p.weapon} weapon (${p.weapon === "machine" ? "rapid fire" : p.weapon === "laser" ? "telegraphed high damage beam" : "deployable mines"}).`,
         p,
         false,
@@ -855,7 +1002,7 @@ export class Game {
       if (blocked(this.grid, target.x, target.y, 15)) continue;
       add(
         `maneuver_${i}`,
-        "侧移 / 闪避",
+        "STRAFE / DODGE",
         `Move to adjacent corridor. Enemy distance: ${known ? Math.round(distance(target, known)) : "unknown"}; incoming danger at destination: ${this.risk(target)}; can fire from destination: ${known ? visible(this.grid, target, known) : false}.`,
         target,
         this.ai.weapon !== "mine",
@@ -881,7 +1028,7 @@ export class Game {
     if (retreat)
       add(
         "retreat",
-        "转移到掩体",
+        "MOVE TO COVER",
         "Move toward cover away from last observed enemy; avoid incoming fire.",
         retreat,
         this.ai.weapon === "mine",
@@ -896,7 +1043,7 @@ export class Game {
       const target = center(points[Math.floor(this.time / 9) % points.length]);
       add(
         "scout",
-        "搜索战场",
+        "SEARCH ARENA",
         "Explore a search waypoint to find the opponent or equipment.",
         target,
       );
@@ -908,13 +1055,553 @@ export class Game {
     this.controllers.add(controller);
     const timeout = setTimeout(
       () => controller.abort(),
-      body.role === "tank" ? 3000 : 8500,
+      body.role !== "director" ? 3000 : 8500,
     );
     try {
       return await this.transport(body, controller.signal);
     } finally {
       clearTimeout(timeout);
       this.controllers.delete(controller);
+    }
+  }
+  finishDirectAction() {
+    const action = this.directAction;
+    if (!action) return;
+    const durationMs = Math.max(
+      0,
+      Math.round((this.time - action.startedAt) * 1000),
+    );
+    this.lastDirectOutcome = {
+      move: action.move,
+      durationMs,
+      start: { ...action.start },
+      end: { ...action.end },
+      displacementPx: Math.round(distance(action.start, action.end)),
+      pathLengthPx: Math.round(action.movedPx),
+      blockedMs: Math.round(action.blockedMs),
+      blockedAxes: [
+        ...(action.blockedXMs > 40 ? ["x"] : []),
+        ...(action.blockedYMs > 40 ? ["y"] : []),
+      ],
+    };
+    this.directAction = null;
+  }
+  previewDirectMove(move: string, horizon = 1.25) {
+    const [rawX, rawY] = MOVES[move];
+    const magnitude = Math.hypot(rawX, rawY) || 1;
+    const vx = (rawX / magnitude) * TANK_SPEED;
+    const vy = (rawY / magnitude) * TANK_SPEED;
+    let x = this.ai.x,
+      y = this.ai.y,
+      moved = 0,
+      blockedX = false,
+      blockedY = false;
+    const step = 0.025;
+    for (let elapsed = 0; elapsed < horizon; elapsed += step) {
+      const dt = Math.min(step, horizon - elapsed);
+      const oldX = x,
+        oldY = y;
+      if (
+        !blocked(this.grid, x + vx * dt, y, 15) &&
+        distance({ x: x + vx * dt, y }, this.player) >= 30
+      )
+        x += vx * dt;
+      else if (rawX) blockedX = true;
+      if (
+        !blocked(this.grid, x, y + vy * dt, 15) &&
+        distance({ x, y: y + vy * dt }, this.player) >= 30
+      )
+        y += vy * dt;
+      else if (rawY) blockedY = true;
+      moved += Math.hypot(x - oldX, y - oldY);
+    }
+    let clearance = 96;
+    for (const [dx, dy] of [
+      [1, 0],
+      [-1, 0],
+      [0, 1],
+      [0, -1],
+    ]) {
+      let d = 0;
+      while (
+        d < 96 &&
+        !blocked(this.grid, x + dx * (d + 2), y + dy * (d + 2), 15)
+      )
+        d += 2;
+      clearance = Math.min(clearance, d);
+    }
+    const beforeEnemy = distance(this.ai, this.player);
+    const afterEnemy = distance({ x, y }, this.player);
+    return {
+      horizonMs: Math.round(horizon * 1000),
+      start: { x: Math.round(this.ai.x), y: Math.round(this.ai.y) },
+      end: { x: Math.round(x), y: Math.round(y) },
+      endCell: cell({ x, y }),
+      movedPx: Math.round(moved),
+      blocked: Boolean((rawX && blockedX) || (rawY && blockedY)),
+      blockedAxes: [...(blockedX ? ["x"] : []), ...(blockedY ? ["y"] : [])],
+      minimumWallClearancePx: clearance,
+      enemyDistanceAfterPx: Math.round(afterEnemy),
+      enemyDistanceChangePx: Math.round(afterEnemy - beforeEnemy),
+    };
+  }
+  routeGuidance() {
+    const path = astar(this.grid, cell(this.ai), cell(this.player));
+    if (!path.length) return { reachable: false, lengthCells: null, turns: [] };
+    const turns = path.filter((p, i) => {
+      if (i === 0 || i === path.length - 1) return true;
+      const before = path[i - 1],
+        after = path[i + 1];
+      return (
+        after.x - p.x !== p.x - before.x || after.y - p.y !== p.y - before.y
+      );
+    });
+    return {
+      reachable: true,
+      lengthCells: path.length - 1,
+      turns: turns.slice(0, 10),
+      meaning:
+        "Map navigation summary only; Jev still chooses every movement input.",
+    };
+  }
+  executeDirect(dt: number) {
+    const c = this.directInput;
+    this.selfVelocity = { x: 0, y: 0 };
+    if (!c || !this.directStatus()) {
+      this.finishDirectAction();
+      return;
+    }
+    const [dx, dy] = MOVES[c.move];
+    const before = { x: this.ai.x, y: this.ai.y };
+    this.move(this.ai, dx, dy, dt);
+    const movedX = this.ai.x - before.x,
+      movedY = this.ai.y - before.y;
+    this.selfVelocity = { x: movedX / dt, y: movedY / dt };
+    if (this.directAction) {
+      this.directAction.end = { x: this.ai.x, y: this.ai.y };
+      this.directAction.movedPx += Math.hypot(movedX, movedY);
+      if (c.move !== "stop" && Math.hypot(movedX, movedY) < 0.05)
+        this.directAction.blockedMs += dt * 1000;
+      if (dx && Math.abs(movedX) < 0.05)
+        this.directAction.blockedXMs += dt * 1000;
+      if (dy && Math.abs(movedY) < 0.05)
+        this.directAction.blockedYMs += dt * 1000;
+      if (this.directAction.blockedMs >= 100)
+        this.nextThink = Math.min(this.nextThink, this.time);
+    }
+    // Match player's immediate mouse-angle control; no automatic target tracking.
+    this.ai.turret = c.aim;
+    if (c.fire) this.shoot(this.ai);
+  }
+  directControlCandidates(): DirectControlCandidate[] {
+    const target: Observation = {
+      x: this.player.x,
+      y: this.player.y,
+      velocity: { ...this.velocity },
+      seenAt: this.time,
+    };
+    const bearing = Math.atan2(
+      this.player.y - this.ai.y,
+      this.player.x - this.ai.x,
+    );
+    const leadTime = Math.min(
+      1.8,
+      Math.max(0, interceptTime(this.ai, target, target.velocity) - 23 / 220),
+    );
+    const leadPoint = predictedPosition(
+      this.grid,
+      target,
+      target.velocity,
+      this.ai.weapon === "laser" ? 0.65 : leadTime,
+    );
+    const leadAngle = Math.atan2(
+      leadPoint.y - this.ai.y,
+      leadPoint.x - this.ai.x,
+    );
+    const direct = findShot(
+      this.grid,
+      this.ai,
+      target,
+      this.ai.weapon,
+      "direct",
+    );
+    const bank = findShot(this.grid, this.ai, target, this.ai.weapon, "bank");
+    const actions: { kind: string; angle: number; fire: boolean }[] = [];
+    const addAction = (kind: string, angle: number, fire: boolean) => {
+      const normalized =
+        ((angle % (Math.PI * 2)) + Math.PI * 2) % (Math.PI * 2);
+      const key = `${normalized.toFixed(3)}:${fire}`;
+      if (actions.some((a) => `${a.angle.toFixed(3)}:${a.fire}` === key))
+        return;
+      actions.push({ kind, angle: normalized, fire });
+    };
+    addAction("hold", this.ai.turret, false);
+    addAction("current_fire", this.ai.turret, true);
+    addAction("track", bearing, false);
+    if (this.ai.weapon === "mine")
+      addAction("deploy_mine", this.ai.turret, true);
+    else {
+      addAction("bearing_fire", bearing, true);
+      addAction("lead_fire", direct?.angle ?? leadAngle, true);
+      addAction("left_probe", bearing - (12 * Math.PI) / 180, true);
+      addAction("right_probe", bearing + (12 * Math.PI) / 180, true);
+      if (bank) addAction("bank_fire", bank.angle, true);
+    }
+
+    const hazards = forecastHazards(
+      this.grid,
+      this.bullets,
+      this.mines,
+      this.beams,
+    );
+    const routeBefore = astar(
+      this.grid,
+      cell(this.ai),
+      cell(this.player),
+    ).length;
+    const result: DirectControlCandidate[] = [];
+    for (const move of Object.keys(MOVES)) {
+      const motion = this.previewDirectMove(move);
+      const path = [motion.end];
+      const assessment = assessMotion(
+        this.grid,
+        this.ai,
+        path,
+        hazards,
+        this.player,
+      );
+      const selfProjectileAssessment = assessMotion(
+        this.grid,
+        this.ai,
+        path,
+        hazards.filter(
+          (hazard) => hazard.kind === "bullet" && hazard.owner === "ai",
+        ),
+        this.player,
+      );
+      const routeAfter = astar(
+        this.grid,
+        motion.endCell,
+        cell(this.player),
+      ).length;
+      for (const action of actions) {
+        const verified = action.fire
+          ? traceShot(
+              this.grid,
+              this.ai,
+              action.angle,
+              target,
+              this.ai.weapon,
+              path,
+            )
+          : null;
+        result.push({
+          id: `c${result.length}`,
+          kind: `${move}:${action.kind}`,
+          move,
+          aim: action.angle,
+          fire: action.fire,
+          durationMs: motion.horizonMs,
+          motion,
+          routeRemainingCells: routeAfter ? routeAfter - 1 : null,
+          routeProgressCells:
+            routeBefore && routeAfter ? routeBefore - routeAfter : null,
+          danger: assessment.risk,
+          hitIn: assessment.hitIn,
+          selfProjectileHitIn: selfProjectileAssessment.hitIn,
+          shot: action.fire
+            ? {
+                hit: this.ai.weapon === "mine" || Boolean(verified),
+                bounces: verified?.bounces ?? null,
+                hitIn: verified?.flightTime ?? null,
+                mine: this.ai.weapon === "mine",
+              }
+            : null,
+        });
+      }
+    }
+    return result;
+  }
+  movementProbabilities() {
+    const totals: Record<string, number> = {};
+    for (const candidate of this.directCandidates) {
+      const probability = this.controlProbabilities[candidate.id];
+      if (!Number.isFinite(probability)) continue;
+      totals[candidate.move] = (totals[candidate.move] || 0) + probability;
+    }
+    return totals;
+  }
+  bulletTrajectoryRows(horizon = 1.25) {
+    return this.bullets.map((original, index) => {
+      const bullet = { ...original };
+      const points: number[][] = [
+        [0, Math.round(bullet.x), Math.round(bullet.y), bullet.bounces],
+      ];
+      let previousBounces = bullet.bounces;
+      for (
+        let t = PREDICTION_STEP;
+        t <= horizon + 1e-6;
+        t += PREDICTION_STEP
+      ) {
+        const alive = advanceProjectile(this.grid, bullet, PREDICTION_STEP);
+        const bounced = bullet.bounces !== previousBounces;
+        const sample = Math.round(t * 1000) % 250 === 0;
+        if (bounced || sample || !alive)
+          points.push([
+            Math.round(t * 1000),
+            Math.round(bullet.x),
+            Math.round(bullet.y),
+            bullet.bounces,
+          ]);
+        previousBounces = bullet.bounces;
+        if (!alive) break;
+      }
+      return [
+        index,
+        original.owner,
+        Math.max(0, Math.round(180 - original.age * 1000)),
+        points,
+      ];
+    });
+  }
+  controlObservation(candidates = this.directControlCandidates()) {
+    const tank = (t: Tank) => ({
+      x: Math.round(t.x),
+      y: Math.round(t.y),
+      hp: t.hp,
+      weapon: t.weapon,
+      ammo: t.ammo,
+      cooldown: Number(t.cooldown.toFixed(2)),
+      turretDeg: Math.round(((((t.turret * 180) / Math.PI) % 360) + 360) % 360),
+    });
+    return {
+      observedAt: this.time,
+      self: {
+        ...tank(this.ai),
+        velocity: {
+          x: Math.round(this.selfVelocity.x),
+          y: Math.round(this.selfVelocity.y),
+        },
+      },
+      enemy: {
+        ...tank(this.player),
+        velocity: {
+          x: Math.round(this.velocity.x),
+          y: Math.round(this.velocity.y),
+        },
+      },
+      navigationToEnemy: this.routeGuidance(),
+      lastControlOutcome: this.lastDirectOutcome,
+      currentControl: this.directAction
+        ? {
+            move: this.directAction.move,
+            elapsedMs: Math.round(
+              (this.time - this.directAction.startedAt) * 1000,
+            ),
+            displacementPx: Math.round(
+              distance(this.directAction.start, this.directAction.end),
+            ),
+            pathLengthPx: Math.round(this.directAction.movedPx),
+            blockedMs: Math.round(this.directAction.blockedMs),
+            blockedAxes: [
+              ...(this.directAction.blockedXMs > 40 ? ["x"] : []),
+              ...(this.directAction.blockedYMs > 40 ? ["y"] : []),
+            ],
+          }
+        : null,
+      bullets: this.bullets.map((b) => [
+        Math.round(b.x),
+        Math.round(b.y),
+        Math.round(b.vx),
+        Math.round(b.vy),
+        b.owner,
+        Number(b.age.toFixed(2)),
+        b.bounces,
+      ]),
+      pickups: this.pickups.map((p) => [
+        p.id,
+        p.weapon,
+        Math.round(p.x),
+        Math.round(p.y),
+      ]),
+      mines: this.mines.map((m) => [
+        Math.round(m.x),
+        Math.round(m.y),
+        Number(m.age.toFixed(2)),
+        m.owner,
+      ]),
+      beams: this.beams.map((b) => [
+        Math.round(b.from.x),
+        Math.round(b.from.y),
+        Math.round(b.to.x),
+        Math.round(b.to.y),
+        Number(b.age.toFixed(2)),
+        b.owner,
+        b.fired,
+      ]),
+      objectColumns: {
+        bullets: "x,y,vx,vy,owner,age,bounces",
+        pickups: "id,weapon,x,y",
+        mines: "x,y,age,owner",
+        beams: "from_x,from_y,to_x,to_y,age,owner,fired",
+      },
+      bulletTrajectories: {
+        horizonMs: 1250,
+        columns:
+          "bullet_index,owner,owner_immunity_remaining_ms,points[t_ms,x,y,bounces]",
+        rows: this.bulletTrajectoryRows(),
+        rule: "Bullets ricochet and can hit either tank, including their owner, after the owner's 180ms launch immunity expires. Treat owner=ai trajectories as self-threats.",
+      },
+      controlCandidates: {
+        horizonMs: 1250,
+        columns:
+          "move,aim_deg,fire,end_x,end_y,moved_px,blocked_axes,wall_clearance_px,route_remaining_cells,route_progress_cells,danger,hit_in_s,self_projectile_hit_in_s,shot_hit,shot_bounces,shot_hit_in_s,mine",
+        rows: Object.fromEntries(
+          candidates.map((c) => [
+            c.id,
+            [
+              c.move,
+              Math.round((c.aim * 180) / Math.PI),
+              c.fire,
+              c.motion.end.x,
+              c.motion.end.y,
+              c.motion.movedPx,
+              c.motion.blockedAxes.join("") || "none",
+              c.motion.minimumWallClearancePx,
+              c.routeRemainingCells,
+              c.routeProgressCells,
+              c.danger,
+              c.hitIn === null ? null : Number(c.hitIn.toFixed(2)),
+              c.selfProjectileHitIn === null
+                ? null
+                : Number(c.selfProjectileHitIn.toFixed(2)),
+              c.shot?.hit ?? false,
+              c.shot?.bounces ?? null,
+              c.shot?.hitIn === null || c.shot?.hitIn === undefined
+                ? null
+                : Number(c.shot.hitIn.toFixed(2)),
+              c.shot?.mine ?? false,
+            ],
+          ]),
+        ),
+      },
+      physics: {
+        coordinates:
+          "pixels; x right, y down; angle degrees clockwise from right",
+        controlLifetimeSeconds: 1.8,
+        maximumObservationAgeSeconds: 1.8,
+        projectileRule:
+          "Ricochet bullets damage their shooter after 0.18s; maximum 5 bounces and 7s lifetime.",
+      },
+    };
+  }
+  async thinkDirect() {
+    const start = this.clock();
+    if (
+      this.pending ||
+      !this.running ||
+      this.roundOver ||
+      this.disposed ||
+      start < this.nextAttemptAt ||
+      start - this.lastAttemptAt < 250
+    )
+      return;
+    this.lastAttemptAt = start;
+    this.nextThink = this.time + 0.25;
+    this.pending = true;
+    const epoch = this.epoch,
+      round = this.round,
+      requested = this.time,
+      weapon = this.ai.weapon;
+    const controls = this.directControlCandidates();
+    const state = this.controlObservation(controls);
+    const trace: (typeof this.directTrace)[number] = {
+      at: start,
+      state,
+      status: "pending",
+    };
+    this.directTrace.push(trace);
+    if (this.directTrace.length > 200) this.directTrace.shift();
+    try {
+      const r = await this.ask({
+        role: "controls",
+        round,
+        revision: this.revision,
+        state,
+        candidates: controls.map((c) => ({
+          id: c.id,
+          description: `${c.kind}; authoritative outcome is row ${c.id} in state.controlCandidates`,
+          distance: c.motion.movedPx,
+          risk: c.danger,
+          fire: c.fire,
+          kind: c.kind,
+        })),
+      });
+      trace.result = r;
+      if (epoch !== this.epoch || this.disposed) {
+        trace.status = "invalidated";
+        return;
+      }
+      this.record(r);
+      this.e2eLatency = Math.round(this.clock() - start);
+      if (
+        r.round !== round ||
+        this.clock() - start > 1800 ||
+        this.time - requested > 1.8 ||
+        weapon !== this.ai.weapon
+      ) {
+        this.discarded++;
+        trace.status = "stale";
+        return;
+      }
+      const selected = controls.find((c) => c.id === r.choice);
+      if (!selected) throw Error("Jev returned an invalid control candidate");
+      this.directCandidates = controls;
+      this.selectedControlId = selected.id;
+      this.controlProbabilities = { ...(r.probabilities || {}) };
+      this.finishDirectAction();
+      this.directInput = {
+        move: selected.move,
+        aim: selected.aim,
+        fire: selected.fire,
+        at: this.time,
+        wall: this.clock(),
+      };
+      this.directAction = {
+        move: selected.move,
+        startedAt: this.time,
+        start: { x: this.ai.x, y: this.ai.y },
+        end: { x: this.ai.x, y: this.ai.y },
+        movedPx: 0,
+        blockedMs: 0,
+        blockedXMs: 0,
+        blockedYMs: 0,
+      };
+      // Let the newly applied input produce observable movement before the
+      // next normal request. A confirmed collision can still wake it after 100ms.
+      this.nextThink = this.time + 0.25;
+      this.appliedInterval =
+        this.lastAppliedAt < 0
+          ? null
+          : Math.round((this.time - this.lastAppliedAt) * 1000);
+      this.lastAppliedAt = this.time;
+      this.confidence = r.confidence;
+      this.error = "";
+      trace.status = "applied";
+      trace.applied = this.clock();
+      this.log(
+        "OPPONENT",
+        `${selected.move} · ${((selected.aim * 180) / Math.PI).toFixed(1)}° · ${selected.fire ? "fire" : "hold"}`,
+        "JEV INPUT",
+      );
+    } catch (e) {
+      trace.status = "failed";
+      if (epoch === this.epoch && !this.disposed) {
+        this.error = e instanceof Error ? e.message : "Control request failed";
+        this.nextAttemptAt = this.clock() + 500;
+      }
+    } finally {
+      if (epoch === this.epoch) this.pending = false;
     }
   }
   async think() {
@@ -982,7 +1669,7 @@ export class Game {
           controller:
             "Local reflex predicts 0.9s of bouncing bullets, mines and lasers. It overrides imminent impacts only. Local aiming tracks observed motion but fires only with the selected plan authorization. Hidden enemy motion is unknown.",
           recentActions: this.logs
-            .filter((l) => l.role === "对手")
+            .filter((l) => l.role === "OPPONENT")
             .slice(0, 3)
             .map((l) => l.text),
         },
@@ -1022,7 +1709,7 @@ export class Game {
       }
     } catch (e) {
       if (epoch === this.epoch && !this.disposed) {
-        this.error = e instanceof Error ? e.message : "决策失败";
+        this.error = e instanceof Error ? e.message : "Decision failed";
         this.nextThink = this.time + 2;
         this.failedUntil = this.time + 2;
         this.nextAttemptAt = this.clock() + 2000;
@@ -1057,7 +1744,7 @@ export class Game {
         (this.time - this.lastAppliedAt) * 1000,
       );
     this.lastAppliedAt = this.time;
-    if (this.plan?.id !== plan.id) this.log("对手", plan.label);
+    if (this.plan?.id !== plan.id) this.log("OPPONENT", plan.label);
     this.plan = { ...plan, target, path };
     this.planAge = 0;
     this.nextRoute = this.time + 0.15;
@@ -1135,7 +1822,7 @@ export class Game {
       epoch = this.epoch;
     this.nextDirector = this.time + 12;
     if (list.length === 1) {
-      this.director = "等待新的争夺空间";
+      this.director = "WAITING FOR A FAIR DROP ZONE";
       return;
     }
     let selected: (typeof list)[number] | undefined;
@@ -1152,7 +1839,7 @@ export class Game {
             score: this.score,
             pickups: this.pickups.map((p) => p.weapon),
             recentEvents: this.logs
-              .filter((l) => l.role === "导演")
+              .filter((l) => l.role === "DIRECTOR")
               .slice(0, 3)
               .map((l) => l.text),
             elapsedSeconds: Math.round(this.time),
@@ -1165,8 +1852,8 @@ export class Game {
         selected = list.find((c) => c.id === r.choice);
       } catch (e) {
         if (epoch === this.epoch && !this.disposed) {
-          this.error = e instanceof Error ? e.message : "导演调用失败";
-          this.director = "连接失败，稍后重试";
+          this.error = e instanceof Error ? e.message : "Director request failed";
+          this.director = "CONNECTION FAILED · RETRYING";
         }
       } finally {
         if (epoch === this.epoch) this.directorPending = false;
@@ -1174,13 +1861,13 @@ export class Game {
     }
     if (!selected || epoch !== this.epoch) return;
     if (selected.id === "wait") {
-      this.director = "保持当前战场";
-      this.log("导演", this.director);
+      this.director = "HOLDING CURRENT ARENA";
+      this.log("DIRECTOR", this.director);
       return;
     }
     // Revalidate using CURRENT tank positions after asynchronous inference.
     if (!this.directorCandidates().some((c) => c.id === selected!.id)) {
-      this.director = "位置已变化，等待下次投放";
+      this.director = "POSITIONS CHANGED · DROP DEFERRED";
       return;
     }
     this.pickups.push({
@@ -1190,8 +1877,8 @@ export class Game {
       expires: this.time + 35,
     });
     this.revision++;
-    this.director = `投放${WEAPONS[selected.weapon!].name}`;
-    this.log("导演", this.director);
+    this.director = `DROPPED ${WEAPONS[selected.weapon!].name}`;
+    this.log("DIRECTOR", this.director);
     this.nextThink = Math.min(this.nextThink, this.time + 0.25);
   }
 }

@@ -16,7 +16,7 @@ const transport: ConstructorParameters<typeof Game>[0] = async (
     signal,
   });
   const data = await r.json();
-  if (!r.ok) throw new Error(data.error || "服务暂不可用");
+  if (!r.ok) throw new Error(data.error || "Service unavailable");
   return data;
 };
 function App() {
@@ -132,7 +132,7 @@ function App() {
     };
   }, []);
   const start = () => {
-    if (mode === "jev" && !health?.configured) return;
+    if (mode !== "practice" && !health?.configured) return;
     game.current?.toggle();
     setSnap(game.current!.snapshot());
     canvas.current?.focus();
@@ -164,13 +164,13 @@ function App() {
   return (
     <div className="app">
       <header>
-        <a className="brand" href="/" aria-label="Jev Arena 首页">
+        <a className="brand" href="/" aria-label="Jev Arena home">
           <span className="mark">
             J<span>·</span>
           </span>
           <div>
             JEV<span className="brand-light"> ARENA</span>
-            <small>人类直觉，对阵机器决策。</small>
+            <small>Human instinct versus machine judgment.</small>
           </div>
         </a>
         <div className="header-right">
@@ -186,19 +186,19 @@ function App() {
           >
             <i />
             {mode === "practice"
-              ? "本地练习 · 非 Jev"
+              ? "LOCAL PRACTICE · NO JEV"
               : health?.configured
                 ? snap?.calls
-                  ? "JEV 已连接"
-                  : "JEV 已配置"
+                  ? "JEV CONNECTED"
+                  : "JEV CONFIGURED"
                 : healthError
-                  ? "服务未连接"
-                  : "JEV 待配置"}
+                  ? "SERVICE OFFLINE"
+                  : "JEV NOT CONFIGURED"}
           </span>
           <button
             className="icon-button"
             onClick={() => setHelp(!help)}
-            aria-label="操作说明"
+            aria-label="How to play"
           >
             ?
           </button>
@@ -210,12 +210,11 @@ function App() {
             <div>
               <span className="eyebrow">HUMAN × MACHINE</span>
               <h1>
-                一场会思考的对决<span> / 01</span>
+                A DUEL THAT THINKS<span> / 01</span>
               </h1>
             </div>
             <span className="round">
-              ROUND {String(snap?.round || 1).padStart(2, "0")} <b>·</b> 先得 5
-              分
+              ROUND {String(snap?.round || 1).padStart(2, "0")} <b>·</b> FIRST TO 5
             </span>
           </div>
           <div className="arena-shell">
@@ -239,14 +238,14 @@ function App() {
                   {"●".repeat(snap?.hp[1] ?? 3)}
                   <em>{"○".repeat(3 - (snap?.hp[1] ?? 3))}</em>
                 </span>
-                <strong>{mode === "jev" ? "JEV" : "LOCAL"}</strong>
+                <strong>{mode !== "practice" ? "JEV" : "LOCAL"}</strong>
                 <span className="tank-dot orange">▰</span>
               </div>
             </div>
             <div className="canvas-wrap">
               <canvas
                 ref={canvas}
-                aria-label="坦克战场，WASD 移动，鼠标瞄准，点击开火"
+                aria-label="Tank arena. Move with WASD, aim with the mouse, click to fire."
                 tabIndex={0}
                 onPointerMove={moveMouse}
                 onPointerDown={(e) => {
@@ -270,17 +269,17 @@ function App() {
                     <h2>
                       {snap?.winner ||
                         (snap?.roundOver
-                          ? "下一回合，即将开始"
+                          ? "NEXT ROUND INCOMING"
                           : snap && snap.time > 0
-                            ? "战场已暂停"
-                            : "你的直觉，它的判断。")}
+                            ? "BATTLE PAUSED"
+                            : "YOUR INSTINCT. ITS JUDGMENT.")} 
                     </h2>
                     <p>
                       {snap?.roundOver
-                        ? "重新部署坦克，保留比分。"
+                        ? "Tanks redeploy. The score carries over."
                         : mode === "practice"
-                          ? "本地规则对手与随机道具，用于体验操控。"
-                          : "驾驶绿色坦克，挑战由 Jev 决策的橙色对手。"}
+                          ? "Fight a local rules opponent with random pickups."
+                          : "Drive the green tank against the Jev-controlled orange tank."}
                     </p>
                     {!snap?.roundOver && (
                       <button
@@ -289,10 +288,10 @@ function App() {
                         onClick={snap?.winner ? restart : start}
                       >
                         {snap?.winner
-                          ? "重新挑战"
+                          ? "PLAY AGAIN"
                           : snap && snap.time > 0
-                            ? "继续对决 →"
-                            : "进入战场 →"}
+                            ? "RESUME →"
+                            : "ENTER ARENA →"}
                       </button>
                     )}
                   </div>
@@ -301,9 +300,9 @@ function App() {
             </div>
             <div className="arena-footer">
               <span>
-                <i className="legend-dot green" /> 玩家{" "}
+                <i className="legend-dot green" /> PLAYER{" "}
                 <i className="legend-dot orange" />{" "}
-                {mode === "jev" ? "Jev 对手" : "规则对手"}
+                {mode !== "practice" ? "JEV OPPONENT" : "LOCAL OPPONENT"}
               </span>
               <label>
                 <input
@@ -314,9 +313,9 @@ function App() {
                     if (game.current) game.current.showPaths = e.target.checked;
                   }}
                 />{" "}
-                显示 AI 路线
+                SHOW AI PATHS
               </label>
-              <span>反弹炮弹也会击中自己</span>
+              <span>RICOCHETS CAN HIT THEIR OWNER</span>
             </div>
           </div>
           <div className="controls">
@@ -325,87 +324,127 @@ function App() {
                 <kbd>W</kbd>
                 <kbd>A</kbd>
                 <kbd>S</kbd>
-                <kbd>D</kbd> 移动
+                <kbd>D</kbd> MOVE
               </span>
               <span>
-                <kbd>↖</kbd> 鼠标瞄准
+                <kbd>↖</kbd> MOUSE AIM
               </span>
               <span>
-                <kbd>CLICK</kbd> 开火 / 布雷
+                <kbd>CLICK</kbd> FIRE / MINE
               </span>
             </div>
             <div className="actions">
-              <button onClick={restart}>↻ 重开</button>
+              <button onClick={restart}>↻ RESTART</button>
               <button
                 className="primary small"
                 disabled={!ready || !!snap?.winner}
                 onClick={start}
               >
-                {snap?.running ? "Ⅱ 暂停" : "▶ 开始"}
+                {snap?.running ? "Ⅱ PAUSE" : "▶ START"}
               </button>
             </div>
           </div>
           <div className="bottom-note">
-            <span>01 / 试探、绕行、争夺武器。</span>
-            <span>每一条路线，都是一次选择。</span>
+            <span>01 / PROBE. FLANK. CLAIM WEAPONS.</span>
+            <span>EVERY PATH IS A DECISION.</span>
           </div>
         </section>
         <aside>
           <section className="panel connection">
             <div className="panel-title">
-              <span>决策引擎</span>
+              <span>DECISION ENGINE</span>
               <span className="eyebrow">ENGINE</span>
             </div>
             <div className="mode-switch">
               <button
+                className={mode === "direct" ? "active" : ""}
+                onClick={() => changeMode("direct")}
+              >
+                JEV DIRECT
+              </button>
+              <button
                 className={mode === "jev" ? "active" : ""}
                 onClick={() => changeMode("jev")}
               >
-                Jev 实战
+                JEV TACTICAL
               </button>
               <button
                 className={mode === "practice" ? "active" : ""}
                 onClick={() => changeMode("practice")}
               >
-                本地练习
+                LOCAL PRACTICE
               </button>
             </div>
-            {mode === "jev" && !health?.configured ? (
+            {mode !== "practice" && !health?.configured ? (
               <div className="setup">
                 <strong>
-                  {healthError ? "无法连接本地服务" : "连接你的 Jev"}
+                  {healthError ? "LOCAL SERVICE OFFLINE" : "CONNECT JEV"}
                 </strong>
                 <p>
                   {healthError
-                    ? "请确认 npm run dev 正在运行。"
-                    : "在项目 .env 中配置 TYPESAFE_API_KEY，然后重启服务。密钥仅保存在服务端。"}
+                    ? "Make sure npm run dev is running."
+                    : "Set TYPESAFE_API_KEY in the project .env file, then restart. The key stays on the server."}
                 </p>
-                <button onClick={refresh}>↻ 检查连接</button>
+                <button onClick={refresh}>↻ CHECK CONNECTION</button>
               </div>
             ) : (
               <p className="subtle">
                 {mode === "practice"
-                  ? "规则 AI + 随机投放。不会调用或模拟 Jev 输出。"
-                  : `${health?.model} · Jev 战术 + 本地反射`}
+                  ? "Rules AI with random pickups. No Jev calls or simulated Jev output."
+                  : mode === "direct"
+                    ? `${health?.model} · Direct controls, no auto-aim or auto-dodge`
+                    : `${health?.model} · Jev tactics with local reflexes`}
               </p>
             )}
           </section>
           <section className="panel">
             <div className="panel-title">
               <span>
-                <i className="legend-dot orange" /> 对手正在做什么
+                <i className="legend-dot orange" /> OPPONENT STATUS
               </span>
               <span className={"pulse " + (snap?.pending ? "thinking" : "")}>
-                {snap?.pending ? "判断中" : "LIVE"}
+                {snap?.pending ? "THINKING" : "LIVE"}
               </span>
             </div>
-            <div className="intent">{snap?.plan || "等待决策"}</div>
+            <div className="intent">{snap?.plan || "WAITING FOR DECISION"}</div>
             <div className="combat-status">
-              <span>{snap?.reflex || "监测弹道"}</span>
-              <span>{snap?.shotType || "等待射击授权"}</span>
+              <span>{snap?.reflex || "MONITORING TRAJECTORIES"}</span>
+              <span>{snap?.shotType || "AWAITING FIRE AUTHORIZATION"}</span>
             </div>
+            {mode === "direct" && (
+              <div className="subtle">
+                <p>{snap?.controls}</p>
+                <p>
+                  INPUT AGE: {snap?.controlAge ?? "—"}ms ·{" "}
+                  {snap?.pending ? "REQUESTING" : "AWAITING NEXT OBSERVATION"}
+                </p>
+                <button
+                  onClick={() => {
+                    const data = JSON.stringify(
+                      game.current?.directTrace,
+                      null,
+                      2,
+                    );
+                    const url = URL.createObjectURL(
+                      new Blob([data], { type: "application/json" }),
+                    );
+                    const a = document.createElement("a");
+                    a.href = url;
+                    a.download = "jev-controls.json";
+                    a.click();
+                    setTimeout(() => URL.revokeObjectURL(url), 1000);
+                  }}
+                >
+                  EXPORT LAST 200 CONTROL RECORDS
+                </button>
+                <p>
+                  Timeouts do not pause the game. Inputs release after 1.8
+                  seconds. Confidence comes from one complete control choice.
+                </p>
+              </div>
+            )}
             <div className="weapon-line">
-              <span>当前武器</span>
+              <span>CURRENT WEAPON</span>
               <strong>
                 {WEAPONS[snap?.weapons[1] || "normal"].name}{" "}
                 <small>
@@ -416,26 +455,28 @@ function App() {
             <div className="metrics">
               <div>
                 <b>
-                  {mode === "jev" && snap?.latency ? `${snap.latency}` : "—"}
+                  {mode !== "practice" && snap?.latency
+                    ? `${snap.latency}`
+                    : "—"}
                   <small> ms</small>
                 </b>
-                <span>最近调用</span>
+                <span>LAST CALL</span>
               </div>
               <div>
                 <b>
-                  {mode === "jev" && snap?.confidence != null
+                  {mode !== "practice" && snap?.confidence != null
                     ? `${Math.round(snap.confidence * 100)}%`
                     : "—"}
                 </b>
-                <span>选择置信度</span>
+                <span>CHOICE CONFIDENCE</span>
               </div>
             </div>
             <div className="combat-telemetry">
               <span>
-                目标间隔 <b>{snap?.cadence || 900} ms</b>
+                TARGET INTERVAL <b>{snap?.cadence || 900} ms</b>
               </span>
               <span>
-                实际应用间隔{" "}
+                APPLIED INTERVAL{" "}
                 <b>
                   {snap?.appliedInterval == null
                     ? "—"
@@ -443,28 +484,33 @@ function App() {
                 </b>
               </span>
               <span>
-                端到端耗时{" "}
+                END-TO-END LATENCY{" "}
                 <b>
-                  {mode === "jev" && snap?.e2eLatency
+                  {mode !== "practice" && snap?.e2eLatency
                     ? `${snap.e2eLatency} ms`
                     : "—"}
                 </b>
               </span>
               <span>
-                本地避险 <b>{snap?.reflexCount || 0} 次</b>
+                {mode === "direct" ? "CONTROL CANDIDATES" : "LOCAL DODGES"}{" "}
+                <b>
+                  {mode === "direct"
+                    ? `${snap?.candidateCount || 0}`
+                    : `${snap?.reflexCount || 0}`}
+                </b>
               </span>
               <span>
-                丢弃过期决策 <b>{snap?.discarded || 0} 次</b>
+                STALE DECISIONS <b>{snap?.discarded || 0}</b>
               </span>
             </div>
           </section>
           <section className="panel">
             <div className="panel-title">
-              <span>战场导演</span>
+              <span>ARENA DIRECTOR</span>
               <span className="eyebrow">DIRECTOR</span>
             </div>
             <p className="director-state">
-              <span>✦</span> {snap?.director || "等待战场开始"}
+              <span>✦</span> {snap?.director || "WAITING FOR BATTLE"}
             </p>
             <div className="arsenal">
               {(["machine", "laser", "mine"] as const).map((w) => (
@@ -472,10 +518,10 @@ function App() {
                   key={w}
                   title={
                     w === "machine"
-                      ? "24 发快速射击"
+                      ? "24 rapid-fire rounds"
                       : w === "laser"
-                        ? "4 次蓄力激光，命中造成 2 点伤害"
-                        : "3 枚地雷，1 秒后武装，双方都能触发"
+                        ? "4 charged lasers; 2 damage on hit"
+                        : "3 mines; arm after 1 second; damage either tank"
                   }
                 >
                   <span style={{ color: WEAPONS[w].color }}>
@@ -486,16 +532,16 @@ function App() {
               ))}
             </div>
             <p className="subtle">
-              导演决定投放，双方自由争夺。
+              The director places pickups for either tank to claim.
               <br />
-              地雷拾取后，点击开火部署。
+              Click fire to deploy a collected mine.
             </p>
           </section>
           <section className="panel feed-panel">
             <div className="panel-title">
-              <span>战场动态</span>
+              <span>BATTLE FEED</span>
               <span className="eyebrow">
-                {mode === "jev" ? `${snap?.calls || 0} CALLS` : "LOCAL"}
+                {mode !== "practice" ? `${snap?.calls || 0} CALLS` : "LOCAL"}
               </span>
             </div>
             <div className="feed" aria-live="polite">
@@ -518,13 +564,13 @@ function App() {
                   </div>
                 ))
               ) : (
-                <div className="feed-empty">战场安静，等待第一个决定。</div>
+                <div className="feed-empty">The arena is quiet. Waiting for the first decision.</div>
               )}
             </div>
             <div className="token-count">
-              {mode === "jev"
-                ? `${(snap?.tokens || 0).toLocaleString()} tokens · 本场累计`
-                : "练习数据不计入 Jev 调用"}
+              {mode !== "practice"
+                ? `${(snap?.tokens || 0).toLocaleString()} TOKENS · MATCH TOTAL`
+                : "PRACTICE DOES NOT CALL JEV"}
             </div>
           </section>
         </aside>
@@ -532,7 +578,11 @@ function App() {
       {snap?.error && (
         <div className="error" role="alert">
           {snap.error}{" "}
-          <span>失效战术会停止；本地避险仍可工作，不会自动生成新战术。</span>
+          <span>
+            {mode === "direct"
+              ? "The game continues. The last input remains active until it expires, then releases."
+              : "The stale tactic stops. Local dodging remains active without inventing a new tactic."}
+          </span>
         </div>
       )}
       {help && (
@@ -541,30 +591,34 @@ function App() {
             <button
               className="close"
               onClick={() => setHelp(false)}
-              aria-label="关闭说明"
+              aria-label="Close instructions"
             >
               ×
             </button>
             <span className="eyebrow">FIELD MANUAL</span>
-            <h2>操控坦克，读懂对手。</h2>
+            <h2>Drive your tank. Read your opponent.</h2>
             <p>
-              WASD 或方向键移动。鼠标瞄准，按住左键或空格开火。P
-              暂停，切出窗口自动暂停。
+              Move with WASD or the arrow keys. Aim with the mouse. Hold the
+              left button or Space to fire. Press P to pause. Switching windows
+              pauses automatically.
             </p>
             <p>
-              每辆坦克 3 点生命，先得 5 分获胜。普通炮弹最多反弹 5
-              次，反弹回来的己方炮弹也会造成伤害。
+              Each tank has 3 health. First to 5 points wins. Standard shells
+              can bounce up to 5 times and can hit their owner.
             </p>
             <p>
-              机关枪快速连射；激光炮蓄力 0.65 秒后造成 2 点伤害；地雷部署 1
-              秒后武装，爆炸会伤到双方。
+              The machine gun fires rapidly. The laser charges for 0.65 seconds
+              and deals 2 damage. Mines arm after 1 second and can damage either
+              tank.
             </p>
             <p>
-              Jev
-              选择战术和道具投放；本地控制器持续瞄准、计算反弹弹道，并对迫近的危险紧急闪避。面板单独标明本地反射。置信度不是胜率。
+              In Direct mode, Jev chooses complete movement, aim, and fire
+              controls with no combat assistance. Tactical mode keeps local
+              aiming and emergency dodging. The Jev director places pickups in
+              both modes. Confidence is not a win probability.
             </p>
             <button className="primary" onClick={() => setHelp(false)}>
-              准备好了
+              READY
             </button>
           </div>
         </div>

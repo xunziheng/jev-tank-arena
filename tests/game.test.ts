@@ -8,6 +8,8 @@ import {
   blocked,
   astar,
   cell,
+  distance,
+  TILE,
 } from "../web/src/navigation";
 import type { DecisionResponse } from "../shared/types";
 const noNetwork = async () => {
@@ -19,6 +21,27 @@ const openGrid = () =>
       x === 0 || y === 0 || x === COLS - 1 || y === ROWS - 1 ? 1 : 0,
     ),
   );
+test("each round randomizes distant reachable tank spawns", () => {
+  let seed = 0x12345678;
+  const random = () => {
+    seed = (1664525 * seed + 1013904223) >>> 0;
+    return seed / 0x100000000;
+  };
+  const g = new Game(noNetwork, () => 0, random);
+  const seen = new Set<string>();
+  for (let i = 0; i < 20; i++) {
+    g.reset("practice");
+    const playerCell = cell(g.player),
+      aiCell = cell(g.ai);
+    seen.add(`${playerCell.x},${playerCell.y}:${aiCell.x},${aiCell.y}`);
+    assert.equal(blocked(g.grid, g.player.x, g.player.y, 15), false);
+    assert.equal(blocked(g.grid, g.ai.x, g.ai.y, 15), false);
+    assert.ok(astar(g.grid, playerCell, aiCell).length >= 8);
+    assert.ok(distance(g.player, g.ai) >= TILE * 6);
+  }
+  assert.ok(seen.size > 10);
+  g.dispose();
+});
 test("movement cannot pass through walls", () => {
   const g = new Game(noNetwork);
   g.grid = openGrid();
@@ -127,6 +150,10 @@ test("practice mode runs without API calls and ends rounds", () => {
   for (let i = 0; i < 300; i++) g.update(0.016);
   assert.ok(g.logs.length > 0);
   assert.equal(g.calls, 0);
+  g.score = [0, 0];
+  g.roundOver = false;
+  g.roundTimer = 0;
+  g.player.hp = 3;
   g.ai.hp = 0;
   g.update(0.016);
   assert.deepEqual(g.score, [1, 0]);

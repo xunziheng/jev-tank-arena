@@ -1,6 +1,6 @@
 export type Point = { x: number; y: number };
 export type Weapon = "normal" | "machine" | "laser" | "mine";
-export type Mode = "jev" | "practice";
+export type Mode = "jev" | "practice" | "direct";
 export type Plan = {
   id: string;
   label: string;
@@ -24,7 +24,7 @@ export type Candidate = {
   kind?: string;
 };
 export type DecisionRequest = {
-  role: "tank" | "director";
+  role: "tank" | "director" | "controls";
   round: number;
   revision: number;
   state: Record<string, unknown>;
@@ -33,6 +33,7 @@ export type DecisionRequest = {
 export type DecisionResponse = {
   choice: string;
   confidence: number;
+  probabilities?: Record<string, number>;
   latencyMs: number;
   model: string;
   source: "jev";
@@ -44,8 +45,8 @@ export const WEAPONS: Record<
   Weapon,
   { name: string; icon: string; color: string }
 > = {
-  normal: { name: "反弹炮", icon: "◎", color: "#d8dfda" },
-  machine: { name: "机关枪", icon: "≋", color: "#eebd68" },
-  laser: { name: "激光炮", icon: "ϟ", color: "#b9a5ff" },
-  mine: { name: "地雷", icon: "✳", color: "#ff8c78" },
+  normal: { name: "Ricochet Cannon", icon: "◎", color: "#d8dfda" },
+  machine: { name: "Machine Gun", icon: "≋", color: "#eebd68" },
+  laser: { name: "Laser Cannon", icon: "ϟ", color: "#b9a5ff" },
+  mine: { name: "Mines", icon: "✳", color: "#ff8c78" },
 };

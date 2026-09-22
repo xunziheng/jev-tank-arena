@@ -72,6 +72,88 @@ export function render(ctx: CanvasRenderingContext2D, g: Game) {
     ctx.arc(g.plan.target.x, g.plan.target.y, 9, 0, Math.PI * 2);
     ctx.stroke();
   }
+  if (g.showPaths && g.mode === "direct" && g.directCandidates.length) {
+    const movements = new Map<string, (typeof g.directCandidates)[number]>();
+    const probabilities = g.movementProbabilities();
+    const hasProbabilities = Object.keys(g.controlProbabilities).length > 0;
+    const moveLabels: Record<string, string> = {
+      stop: "STOP",
+      up: "W",
+      down: "S",
+      left: "A",
+      right: "D",
+      up_left: "W+A",
+      up_right: "W+D",
+      down_left: "S+A",
+      down_right: "S+D",
+    };
+    for (const candidate of g.directCandidates)
+      if (!movements.has(candidate.move))
+        movements.set(candidate.move, candidate);
+    const selected = g.directCandidates.find(
+      (candidate) => candidate.id === g.selectedControlId,
+    );
+    for (const candidate of movements.values()) {
+      const active = candidate.move === selected?.move;
+      ctx.beginPath();
+      ctx.moveTo(candidate.motion.start.x, candidate.motion.start.y);
+      ctx.lineTo(candidate.motion.end.x, candidate.motion.end.y);
+      ctx.strokeStyle = active
+        ? "#ffc08c"
+        : candidate.motion.blocked
+          ? "#f08b6a55"
+          : "#73bfa744";
+      ctx.lineWidth = active ? 3 : 1.25;
+      ctx.stroke();
+      ctx.fillStyle = active ? "#ffc08c" : "#6f9188";
+      ctx.beginPath();
+      ctx.arc(
+        candidate.motion.end.x,
+        candidate.motion.end.y,
+        active ? 4 : 2,
+        0,
+        Math.PI * 2,
+      );
+      ctx.fill();
+    }
+    if (hasProbabilities) {
+      ctx.font = "bold 10px monospace";
+      ctx.textAlign = "center";
+      for (const candidate of movements.values()) {
+        const text = `${moveLabels[candidate.move] || candidate.move} ${(
+          (probabilities[candidate.move] || 0) * 100
+        ).toFixed(1)}%`;
+        const width = ctx.measureText(text).width + 10;
+        const x = Math.max(
+          width / 2 + 3,
+          Math.min(WIDTH - width / 2 - 3, candidate.motion.end.x),
+        );
+        const preferredY =
+          candidate.move === "stop"
+            ? candidate.motion.end.y + 30
+            : candidate.motion.end.y - 11;
+        const y = Math.max(14, Math.min(HEIGHT - 5, preferredY));
+        ctx.fillStyle = "#081116d9";
+        rounded(ctx, x - width / 2, y - 11, width, 15, 4);
+        ctx.fillStyle =
+          candidate.move === selected?.move ? "#ffc08c" : "#a7c6bc";
+        ctx.fillText(text, x, y);
+      }
+    }
+    if (selected) {
+      ctx.beginPath();
+      ctx.moveTo(selected.motion.start.x, selected.motion.start.y);
+      ctx.lineTo(
+        selected.motion.start.x + Math.cos(selected.aim) * 80,
+        selected.motion.start.y + Math.sin(selected.aim) * 80,
+      );
+      ctx.strokeStyle = selected.fire ? "#ffdb9b" : "#a9bdc5";
+      ctx.setLineDash([4, 4]);
+      ctx.lineWidth = 2;
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
+  }
   for (const m of g.mines) {
     ctx.fillStyle = m.age < 1 ? "#65514a" : "#d27865";
     ctx.beginPath();
@@ -126,6 +208,7 @@ export function render(ctx: CanvasRenderingContext2D, g: Game) {
     ctx.lineTo(g.mouse.x, g.mouse.y + 13);
     ctx.stroke();
   }
+  if (g.mode === "direct" && g.ai.hp > 0) drawControls(ctx, g);
 }
 function drawTank(ctx: CanvasRenderingContext2D, t: Tank, g: Game) {
   const color = t.id === "player" ? "#9de5c5" : "#f5a475",
@@ -171,7 +254,7 @@ function drawTank(ctx: CanvasRenderingContext2D, t: Tank, g: Game) {
   ctx.textAlign = "center";
   ctx.fillStyle = color;
   ctx.fillText(
-    t.id === "player" ? "YOU" : g.mode === "jev" ? "JEV" : "LOCAL",
+    t.id === "player" ? "YOU" : g.mode !== "practice" ? "JEV" : "LOCAL",
     t.x,
     t.y - 29,
   );
@@ -179,4 +262,38 @@ function drawTank(ctx: CanvasRenderingContext2D, t: Tank, g: Game) {
     ctx.fillStyle = i < t.hp ? color : "#263c43";
     ctx.fillRect(t.x - 13 + i * 9, t.y + 26, 7, 3);
   }
+}
+
+// Draw last so effects never cover the input readout. Clamp within the arena.
+function drawControls(ctx: CanvasRenderingContext2D, g: Game) {
+  const input = g.directInput;
+  const active = Boolean(g.running && !g.roundOver && g.directStatus());
+  const moves: Record<string, string> = {
+    stop: "STOP",
+    up: "W",
+    down: "S",
+    left: "A",
+    right: "D",
+    up_left: "W+A",
+    up_right: "W+D",
+    down_left: "S+A",
+    down_right: "S+D",
+  };
+  const angle = ((((g.ai.turret * 180) / Math.PI) % 360) + 360) % 360;
+  const action = `${moves[active && input ? input.move : "stop"]} · AIM ${angle.toFixed(0)}° · ${active && input?.fire ? "FIRE" : "HOLD"}`;
+  ctx.save();
+  ctx.font = "bold 11px sans-serif";
+  const width = ctx.measureText(action).width + 20;
+  const x = Math.max(6, Math.min(WIDTH - width - 6, g.ai.x - width / 2));
+  const y = Math.max(6, g.ai.y - 61);
+  ctx.fillStyle = "rgba(5, 13, 18, 0.94)";
+  rounded(ctx, x, y, width, 24, 6);
+  ctx.strokeStyle = active ? "#f5a475" : "#627576";
+  ctx.lineWidth = 1;
+  ctx.stroke();
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillStyle = "#ffe0c9";
+  ctx.fillText(action, x + width / 2, y + 12);
+  ctx.restore();
 }
