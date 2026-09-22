@@ -8,7 +8,7 @@ You control the green tank. Jev controls the orange tank and can also act as the
 
 ## Demo
 
-[Watch the gameplay video](docs/assets/jev-tank-arena-demo.mp4?raw=1)
+https://github.com/user-attachments/assets/d393b1f0-dde2-4980-8c67-132b7136fd00
 
 ## Features
 
